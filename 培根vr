@@ -109,12 +109,11 @@ task.spawn(function()
     local leftAngleX, leftAngleY, leftAngleZ = 0, 0, 0
     local rightAngleX, rightAngleY, rightAngleZ = 0, 0, 0
 
-    -- 打招呼
-    local waveStartTime = 0
-    local WAVE_DURATION = 2.5
-    -- 鼓掌
-    local clapStartTime = 0
-    local CLAP_DURATION = 2.0
+    -- 动作计时器
+    local waveStartTime, waveDuration = 0, 2.5
+    local clapStartTime, clapDuration = 0, 2.0
+    local startleStartTime, startleDuration = 0, 1.5   -- 震惊
+    local flexStartTime, flexDuration = 0, 2.0        -- 展示肌肉
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -126,27 +125,46 @@ task.spawn(function()
             if uc == Enum.UserCFrame.LeftHand then
                 local basePos = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
                 local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
-                -- 打招呼动画
-                if os.clock() - waveStartTime < WAVE_DURATION then
+
+                -- 打招呼（左手挥手）
+                if os.clock() - waveStartTime < waveDuration then
                     local t = os.clock() - waveStartTime
-                    local wave = math.sin(t * 12) * 0.6
-                    rot = rot * CFrame.Angles(wave, 0, 0)
+                    rot = rot * CFrame.Angles(math.sin(t * 12) * 0.6, 0, 0)
                 end
-                -- 鼓掌动画（双手快速靠近-分离）
-                if os.clock() - clapStartTime < CLAP_DURATION then
+                -- 鼓掌（双手靠近-分离）
+                if os.clock() - clapStartTime < clapDuration then
                     local t = os.clock() - clapStartTime
-                    local offset = math.sin(t * 25) * 0.15 * scale
-                    basePos = basePos + Vector3.new(offset, 0, 0)
+                    basePos = basePos + Vector3.new(math.sin(t * 25) * 0.15 * scale, 0, 0)
                 end
+                -- 震惊（双手外扩+抖动）
+                if os.clock() - startleStartTime < startleDuration then
+                    local t = os.clock() - startleStartTime
+                    local shake = math.sin(t * 30) * 0.08 * scale
+                    basePos = basePos + Vector3.new(-0.3 * scale + shake, shake, shake)
+                    rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
+                end
+                -- 展示肌肉仅对右手操作，左手不变（此处无操作）
                 return CFrame.new(basePos) * rot
             elseif uc == Enum.UserCFrame.RightHand then
                 local basePos = Vector3.new(S.spread, S.height, -S.rightReach) * scale
                 local rot = CFrame.Angles(math.rad(rightAngleX), math.rad(rightAngleY), math.rad(rightAngleZ))
-                -- 鼓掌动画（双手靠近）
-                if os.clock() - clapStartTime < CLAP_DURATION then
+
+                if os.clock() - clapStartTime < clapDuration then
                     local t = os.clock() - clapStartTime
-                    local offset = -math.sin(t * 25) * 0.15 * scale
-                    basePos = basePos + Vector3.new(offset, 0, 0)
+                    basePos = basePos + Vector3.new(-math.sin(t * 25) * 0.15 * scale, 0, 0)
+                end
+                if os.clock() - startleStartTime < startleDuration then
+                    local t = os.clock() - startleStartTime
+                    local shake = math.sin(t * 30) * 0.08 * scale
+                    basePos = basePos + Vector3.new(0.3 * scale + shake, shake, -shake)
+                    rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
+                end
+                -- 展示肌肉（右手弯曲上抬）
+                if os.clock() - flexStartTime < flexDuration then
+                    local t = os.clock() - flexStartTime
+                    local flex = math.min(t / 0.3, 1)  -- 0.3秒内到达目标
+                    basePos = basePos + Vector3.new(0, 0.4 * flex * scale, 0.3 * flex * scale)
+                    rot = rot * CFrame.Angles(math.rad(-90 * flex), 0, math.rad(-20 * flex))
                 end
                 return CFrame.new(basePos) * rot
             end
@@ -245,8 +263,10 @@ task.spawn(function()
             if io.KeyCode == Enum.KeyCode.Semicolon then S.speedMult = math.clamp(S.speedMult - 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.Quote then S.speedMult = math.clamp(S.speedMult + 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.G then S.toggleGrabMode = not S.toggleGrabMode end
-            -- 鼓掌快捷键（PC）
+            -- 动作快捷键
             if io.KeyCode == Enum.KeyCode.H then clapStartTime = os.clock() end
+            if io.KeyCode == Enum.KeyCode.J then startleStartTime = os.clock() end
+            if io.KeyCode == Enum.KeyCode.K then flexStartTime = os.clock() end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -296,7 +316,6 @@ task.spawn(function()
         end
     end)
 
-    -- PC端滚轮：Shift/Ctrl区分左右手（最大伸长值改为10）
     UIS.InputChanged:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.MouseWheel then
             local delta = -io.Position.Z * 0.07
@@ -345,7 +364,7 @@ task.spawn(function()
         local lbl = Instance.new("TextLabel", gui)
         lbl.AnchorPoint = Vector2.new(1, 0)
         lbl.Position = UDim2.new(1, -10, 0, 10)
-        lbl.Size = UDim2.new(0, 380, 0, 260)
+        lbl.Size = UDim2.new(0, 380, 0, 280)
         lbl.BackgroundColor3 = Color3.fromRGB(0,0,0); lbl.BackgroundTransparency = 0.45
         lbl.TextColor3 = Color3.fromRGB(255,255,255)
         lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Top
@@ -358,7 +377,8 @@ task.spawn(function()
             .."E/Q - pinch: grab PLAYERS (R/L)\n"
             .."Wheel - reach (Shift=right, Ctrl=left)\n"
             .."LReach: %.2f | RReach: %.2f (max 10)\n"
-            .."H - clap (PC) | 👋 wave | 👏 clap\n"
+            .."H - clap | J - startle | K - flex\n"
+            .."👋 wave | 👏 clap | 😱 startle | 💪 flex\n"
             .."+/- - body size: %.1f/100\n"
             .."[/] - grab radius: %.1fx\n"
             ..";/' - move speed: %.1fx\n"
@@ -643,11 +663,11 @@ task.spawn(function()
             createHorizontalSlider(mobileGui, "RightYAngle", 0.88, 0.51, -360, 360, 0, function(val) rightAngleY = val end)
             createHorizontalSlider(mobileGui, "RightZAngle", 0.88, 0.45, -360, 360, 0, function(val) rightAngleZ = val end)
 
-            -- ========== 垂直长度滑块（最大10，高度0.24） ==========
+            -- ========== 垂直长度滑块 ==========
             local function createVerticalSlider(parent, name, posX, posY, heightScale, minVal, maxVal, initVal, updateFunc)
                 local track = Instance.new("Frame")
                 track.Name = name.."Track"
-                track.Size = UDim2.fromScale(0.03, heightScale)   -- heightScale 现在为 0.24
+                track.Size = UDim2.fromScale(0.03, heightScale)
                 track.Position = UDim2.fromScale(posX, posY)
                 track.AnchorPoint = Vector2.new(0.5, 0.5)
                 track.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
@@ -683,27 +703,26 @@ task.spawn(function()
             createVerticalSlider(mobileGui, "LeftReach", 0.05, 0.50, 0.24, 0.05, 10, S.leftReach, function(val) S.leftReach = val end)
             createVerticalSlider(mobileGui, "RightReach", 0.95, 0.50, 0.24, 0.05, 10, S.rightReach, function(val) S.rightReach = val end)
 
-            -- 打招呼按钮
-            local waveBtn = createBtn(mobileGui, "WaveBtn",
-                UDim2.fromScale(0.12, 0.40), UDim2.fromScale(0.1, 0.05), "👋", 20)
+            -- 动画按钮（垂直排列在左侧滑块上方）
+            local waveBtn = createBtn(mobileGui, "WaveBtn", UDim2.fromScale(0.12, 0.40), UDim2.fromScale(0.1, 0.05), "👋", 20)
             waveBtn.AnchorPoint = Vector2.new(0.5, 1)
-            waveBtn.InputBegan:Connect(function(i)
-                if i.UserInputType == Enum.UserInputType.Touch then
-                    waveStartTime = os.clock()
-                end
-            end)
+            waveBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then waveStartTime = os.clock() end end)
             bindPress(waveBtn)
 
-            -- 鼓掌按钮（位于打招呼上方）
-            local clapBtn = createBtn(mobileGui, "ClapBtn",
-                UDim2.fromScale(0.12, 0.36), UDim2.fromScale(0.1, 0.05), "👏", 20)
+            local clapBtn = createBtn(mobileGui, "ClapBtn", UDim2.fromScale(0.12, 0.36), UDim2.fromScale(0.1, 0.05), "👏", 20)
             clapBtn.AnchorPoint = Vector2.new(0.5, 1)
-            clapBtn.InputBegan:Connect(function(i)
-                if i.UserInputType == Enum.UserInputType.Touch then
-                    clapStartTime = os.clock()
-                end
-            end)
+            clapBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then clapStartTime = os.clock() end end)
             bindPress(clapBtn)
+
+            local startleBtn = createBtn(mobileGui, "StartleBtn", UDim2.fromScale(0.12, 0.32), UDim2.fromScale(0.1, 0.05), "😱", 20)
+            startleBtn.AnchorPoint = Vector2.new(0.5, 1)
+            startleBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then startleStartTime = os.clock() end end)
+            bindPress(startleBtn)
+
+            local flexBtn = createBtn(mobileGui, "FlexBtn", UDim2.fromScale(0.12, 0.28), UDim2.fromScale(0.1, 0.05), "💪", 20)
+            flexBtn.AnchorPoint = Vector2.new(0.5, 1)
+            flexBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then flexStartTime = os.clock() end end)
+            bindPress(flexBtn)
 
             -- 触摸判断逻辑
             local function findSliderAt(pos)
@@ -743,7 +762,7 @@ task.spawn(function()
                 local minY = absPos.Y + thumbSize.Y / 2
                 local maxY = absPos.Y + absSize.Y - thumbSize.Y / 2
                 local clampedY = math.clamp(touchPos.Y, minY, maxY)
-                local ratio = 1 - (clampedY - minY) / (maxY - minY)   -- top = max
+                local ratio = 1 - (clampedY - minY) / (maxY - minY)
                 local value = slider.min + (slider.max - slider.min) * ratio
                 value = math.clamp(value, slider.min, slider.max)
                 local thumbY = (0.5 - ratio) * (absSize.Y - thumbSize.Y)
@@ -761,8 +780,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                -- 检查两个动画按钮
-                for _, btn in ipairs({waveBtn, clapBtn}) do
+                for _, btn in ipairs({waveBtn, clapBtn, startleBtn, flexBtn}) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
                     if pos.X >= btnAbsPos.X and pos.X <= btnAbsPos.X + btnAbsSize.X
@@ -770,7 +788,6 @@ task.spawn(function()
                         return true
                     end
                 end
-                -- 其他控件区域
                 local dpadPos = dpad.AbsolutePosition
                 local dpadSize = dpad.AbsoluteSize
                 if pos.X >= dpadPos.X and pos.X <= dpadPos.X + dpadSize.X
@@ -815,9 +832,7 @@ task.spawn(function()
                     end
                     return
                 end
-                if isInsideAnyControl(pos) then
-                    return
-                end
+                if isInsideAnyControl(pos) then return end
                 if pos.X > viewport.X * 0.5 then
                     local vpY = viewport.Y
                     if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
@@ -844,10 +859,8 @@ task.spawn(function()
             end)
 
             UIS.TouchEnded:Connect(function(i)
-                if activeSliderTouches[i] then
-                    activeSliderTouches[i] = nil
-                elseif touchLook then
-                    touchLook = false
+                if activeSliderTouches[i] then activeSliderTouches[i] = nil
+                elseif touchLook then touchLook = false
                 end
             end)
         end
