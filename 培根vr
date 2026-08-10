@@ -94,21 +94,19 @@ task.spawn(function()
     local cam = workspace.CurrentCamera
     local S = {
         reach = 0.55, spread = 0.34, height = -0.25,
-        sens = 0.005,   -- 鼠标灵敏度已翻倍（原0.0025）
+        sens = 0.005,
         moveK = 0.16, look = true,
         scale = 10,
         grabRadiusMult = 1,
         toggleGrabMode = false,
         speedMult = 1,
     }
-
-    -- 左右手摇杆方向 (由移动端虚拟摇杆控制)
     local leftStickDir = Vector2.zero
     local rightStickDir = Vector2.zero
 
     local function computeStickRotation(stickDir)
         if stickDir.Magnitude < 0.1 then
-            return CFrame.new()  -- 无输入时保持默认朝向
+            return CFrame.new()
         end
         local dir = stickDir.Unit
         local camCF = workspace.CurrentCamera.CFrame
@@ -379,7 +377,7 @@ task.spawn(function()
                 end)
             end
 
-            -- 方向键、升降、抓取等（保持原布局）
+            -- 方向键、升降、抓取等
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -499,7 +497,6 @@ task.spawn(function()
             end)
             bindPress(pinchR)
 
-            -- 功能区（体型/手长/抓距/速度/模式/视角）
             local func = Instance.new("Frame")
             func.Size = UDim2.fromScale(0.28, 0.42)
             func.Position = UDim2.fromScale(0.97, 0.12)
@@ -587,7 +584,7 @@ task.spawn(function()
             end)
             bindPress(toggleLook)
 
-            -- ========== 虚拟摇杆（左右手方向控制） ==========
+            -- ========== 虚拟摇杆（修复版） ==========
             local function createStick(parent, name, position, size)
                 local base = Instance.new("Frame")
                 base.Name = name.."Base"
@@ -621,16 +618,8 @@ task.spawn(function()
             local rightBase, rightThumb = createStick(mobileGui, "RightStick",
                 UDim2.fromScale(0.88, 0.6), UDim2.fromScale(0.14, 0.14))
 
-            -- 摇杆区域记录（用于区分触摸）
-            local function getStickRegion(base)
-                local pos = base.AbsolutePosition
-                local size = base.AbsoluteSize
-                return Rect.new(pos.X, pos.Y, pos.X + size.X, pos.Y + size.Y)
-            end
-            local leftRegion, rightRegion
-
-            -- 更新摇杆方向
-            local function updateStick(base, thumb, touchPos, dirVar)
+            -- 更新摇杆方向（修复：返回方向值）
+            local function updateStick(base, thumb, touchPos)
                 local center = base.AbsolutePosition + base.AbsoluteSize / 2
                 local radius = base.AbsoluteSize.X / 2
                 local offset = touchPos - center
@@ -638,15 +627,17 @@ task.spawn(function()
                     offset = offset.Unit * radius
                 end
                 thumb.Position = UDim2.fromOffset(offset.X, offset.Y) + UDim2.fromScale(0.5, 0.5)
-                dirVar = offset / radius   -- 归一化方向
-                return dirVar
+                return offset / radius
             end
 
-            -- 活动的摇杆触摸ID
             local activeLeftTouch, activeRightTouch = nil, nil
-            local touchSens = 0.005  -- 触摸视角灵敏度（已加倍）
-
-            -- 更新区域引用（首次及每帧）
+            local touchSens = 0.005
+            local function getStickRegion(base)
+                local pos = base.AbsolutePosition
+                local size = base.AbsoluteSize
+                return Rect.new(pos.X, pos.Y, pos.X + size.X, pos.Y + size.Y)
+            end
+            local leftRegion, rightRegion
             local function updateRegions()
                 leftRegion = getStickRegion(leftBase)
                 rightRegion = getStickRegion(rightBase)
@@ -657,7 +648,6 @@ task.spawn(function()
             rightBase:GetPropertyChangedSignal("AbsolutePosition"):Connect(updateRegions)
             rightBase:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateRegions)
 
-            -- 触摸开始（覆盖视角滑动检测）
             local touchLook = false
             local lastTouch = Vector2.zero
             local viewport = workspace.CurrentCamera.ViewportSize
@@ -668,13 +658,13 @@ task.spawn(function()
                 if leftRegion and pos.X >= leftRegion.Min.X and pos.X <= leftRegion.Max.X
                     and pos.Y >= leftRegion.Min.Y and pos.Y <= leftRegion.Max.Y then
                     activeLeftTouch = i
-                    leftStickDir = updateStick(leftBase, leftThumb, pos, leftStickDir)
+                    leftStickDir = updateStick(leftBase, leftThumb, pos)
                     return
                 end
                 if rightRegion and pos.X >= rightRegion.Min.X and pos.X <= rightRegion.Max.X
                     and pos.Y >= rightRegion.Min.Y and pos.Y <= rightRegion.Max.Y then
                     activeRightTouch = i
-                    rightStickDir = updateStick(rightBase, rightThumb, pos, rightStickDir)
+                    rightStickDir = updateStick(rightBase, rightThumb, pos)
                     return
                 end
                 -- 视角滑动
@@ -689,9 +679,9 @@ task.spawn(function()
 
             UIS.TouchMoved:Connect(function(i)
                 if activeLeftTouch == i then
-                    leftStickDir = updateStick(leftBase, leftThumb, i.Position, leftStickDir)
+                    leftStickDir = updateStick(leftBase, leftThumb, i.Position)
                 elseif activeRightTouch == i then
-                    rightStickDir = updateStick(rightBase, rightThumb, i.Position, rightStickDir)
+                    rightStickDir = updateStick(rightBase, rightThumb, i.Position)
                 elseif touchLook then
                     local delta = i.Position - lastTouch
                     yaw = yaw - delta.X * touchSens
