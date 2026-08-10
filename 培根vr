@@ -94,12 +94,34 @@ task.spawn(function()
     local cam = workspace.CurrentCamera
     local S = {
         reach = 0.55, spread = 0.34, height = -0.25,
-        sens = 0.0025, moveK = 0.16, look = true,
+        sens = 0.005,   -- 鼠标灵敏度已翻倍（原0.0025）
+        moveK = 0.16, look = true,
         scale = 10,
-        grabRadiusMult = 1,    -- 抓取范围倍率
-        toggleGrabMode = false, -- 抓取模式：false=长按 true=切换
-        speedMult = 1,         -- 移动速度倍率
+        grabRadiusMult = 1,
+        toggleGrabMode = false,
+        speedMult = 1,
     }
+
+    -- 左右手摇杆方向 (由移动端虚拟摇杆控制)
+    local leftStickDir = Vector2.zero
+    local rightStickDir = Vector2.zero
+
+    local function computeStickRotation(stickDir)
+        if stickDir.Magnitude < 0.1 then
+            return CFrame.new()  -- 无输入时保持默认朝向
+        end
+        local dir = stickDir.Unit
+        local camCF = workspace.CurrentCamera.CFrame
+        local target = (camCF.RightVector * dir.X + camCF.UpVector * dir.Y + camCF.LookVector * 0.2).Unit
+        local up = Vector3.new(0, 1, 0)
+        local right = up:Cross(target)
+        if right.Magnitude < 0.01 then
+            right = Vector3.new(1, 0, 0):Cross(target)
+        end
+        up = target:Cross(right)
+        return CFrame.fromMatrix(Vector3.new(), right, up, target)
+    end
+
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
     end)
@@ -108,11 +130,13 @@ task.spawn(function()
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
             if uc == Enum.UserCFrame.LeftHand then
-                local c = CFrame.new(-S.spread, S.height, -S.reach)
-                return c.Rotation + c.Position * scale
+                local rot = computeStickRotation(leftStickDir)
+                local pos = Vector3.new(-S.spread, S.height, -S.reach) * scale
+                return rot.Rotation + pos
             elseif uc == Enum.UserCFrame.RightHand then
-                local c = CFrame.new(S.spread, S.height, -S.reach)
-                return c.Rotation + c.Position * scale
+                local rot = computeStickRotation(rightStickDir)
+                local pos = Vector3.new(S.spread, S.height, -S.reach) * scale
+                return rot.Rotation + pos
             end
             return identity
         end
@@ -146,14 +170,12 @@ task.spawn(function()
         end
     end)
 
-    -- ========== 修复1：抓取范围体型补偿 + 倍率调节 ==========
     pcall(function()
         local pmMT = getrawmetatable(vrm.PropManager)
         if pmMT and rawget(pmMT, "GetBestGrabPartInRadius") then
             local orig = pmMT.GetBestGrabPartInRadius
             setreadonly(pmMT, false)
             pmMT.GetBestGrabPartInRadius = function(self, root, prox, radius, scale, ...)
-                -- 以scale=10为基准，缩小体型时自动补偿抓取半径
                 local scaleComp = 10 / math.max(S.scale, 0.1)
                 local adjustedRadius = radius * scaleComp * S.grabRadiusMult
                 return orig(self, root, prox, adjustedRadius, scale, ...)
@@ -173,7 +195,6 @@ task.spawn(function()
         end
     end)
 
-    -- 突破体型限制：1-10放宽到0.1-100
     local function setScale(n)
         n = math.clamp(n, 0.1, 100)
         S.scale = n
@@ -201,14 +222,12 @@ task.spawn(function()
     end
     setLook(true)
 
-    -- ========== 修复2：输入逻辑适配长按/切换双模式 ==========
     UIS.InputBegan:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.Keyboard then
             keys[io.KeyCode] = true
             if io.KeyCode == Enum.KeyCode.LeftAlt then setLook(not S.look) end
             if io.KeyCode == Enum.KeyCode.Equals then setScale(S.scale + 1) end
             if io.KeyCode == Enum.KeyCode.Minus then setScale(S.scale - 1) end
-            -- PC端快捷键：[]调节抓取范围 ;'调节速度 G切换模式
             if io.KeyCode == Enum.KeyCode.LeftBracket then S.grabRadiusMult = math.clamp(S.grabRadiusMult - 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.RightBracket then S.grabRadiusMult = math.clamp(S.grabRadiusMult + 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.Semicolon then S.speedMult = math.clamp(S.speedMult - 0.1, 0.1, 10) end
@@ -254,7 +273,6 @@ task.spawn(function()
     UIS.InputEnded:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.Keyboard then
             keys[io.KeyCode] = false
-            -- 仅长按模式下松开取消
             if Input and io.KeyCode == Enum.KeyCode.E and not S.toggleGrabMode then Input.rIndex = 0 end
             if Input and io.KeyCode == Enum.KeyCode.Q and not S.toggleGrabMode then Input.lIndex = 0 end
         elseif io.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -264,14 +282,12 @@ task.spawn(function()
         end
     end)
 
-    -- 突破手长限制：0.15-2.5放宽到0.05-20
     UIS.InputChanged:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.MouseWheel then
             S.reach = math.clamp(S.reach - io.Position.Z * 0.07, 0.05, 20)
         end
     end)
 
-    -- ========== 修复3：速度倍率生效 ==========
     RunService:BindToRenderStep("NoVR_Control", Enum.RenderPriority.Camera.Value + 1, function(dt)
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
@@ -299,7 +315,6 @@ task.spawn(function()
         end
     end)
 
-    -- ========== HUD新增参数显示 ==========
     pcall(function()
         local gui = Instance.new("ScreenGui")
         gui.Name = "NoVR_HUD"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
@@ -328,7 +343,7 @@ task.spawn(function()
         end)
     end)
 
-    -- ========== 移动端全功能控制UI（新增按钮） ==========
+    -- ===================== 移动端控制（含虚拟摇杆） =====================
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
@@ -337,6 +352,7 @@ task.spawn(function()
             mobileGui.IgnoreGuiInset = true
             mobileGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
             mobileGui.Parent = lp:WaitForChild("PlayerGui")
+
             local function createBtn(parent, name, pos, size, text, textSize)
                 textSize = textSize or 14
                 local btn = Instance.new("TextButton")
@@ -362,7 +378,8 @@ task.spawn(function()
                     if i.UserInputType == Enum.UserInputType.Touch then btn.BackgroundTransparency = 0.5 end
                 end)
             end
-            -- 1. 左下角方向键
+
+            -- 方向键、升降、抓取等（保持原布局）
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -390,7 +407,7 @@ task.spawn(function()
             bindKey(down, Enum.KeyCode.S)
             bindKey(left, Enum.KeyCode.A)
             bindKey(right, Enum.KeyCode.D)
-            -- 2. 左侧升降键
+
             local vert = Instance.new("Frame")
             vert.Size = UDim2.fromScale(0.09, 0.15)
             vert.Position = UDim2.fromScale(0.03, 0.78)
@@ -402,7 +419,7 @@ task.spawn(function()
             descend.AnchorPoint = Vector2.new(0, 1)
             bindKey(ascend, Enum.KeyCode.Space)
             bindKey(descend, Enum.KeyCode.LeftShift)
-            -- 3. 右下角：抓取+捏取（适配双模式）
+
             local grab = Instance.new("Frame")
             grab.Size = UDim2.fromScale(0.3, 0.18)
             grab.Position = UDim2.fromScale(0.97, 0.97)
@@ -417,7 +434,6 @@ task.spawn(function()
             pinchL.AnchorPoint = Vector2.new(0, 1)
             pinchR.AnchorPoint = Vector2.new(1, 1)
 
-            -- 左手抓取
             grabL.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch and Input then
                     if S.toggleGrabMode then
@@ -434,7 +450,6 @@ task.spawn(function()
                 end
             end)
             bindPress(grabL)
-            -- 右手抓取
             grabR.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch and Input then
                     if S.toggleGrabMode then
@@ -451,7 +466,6 @@ task.spawn(function()
                 end
             end)
             bindPress(grabR)
-            -- 左手捏取
             pinchL.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch and Input then
                     if S.toggleGrabMode then
@@ -468,7 +482,6 @@ task.spawn(function()
                 end
             end)
             bindPress(pinchL)
-            -- 右手捏取
             pinchR.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch and Input then
                     if S.toggleGrabMode then
@@ -486,7 +499,7 @@ task.spawn(function()
             end)
             bindPress(pinchR)
 
-            -- 4. 右上角功能区（新增抓距、速度、模式按钮）
+            -- 功能区（体型/手长/抓距/速度/模式/视角）
             local func = Instance.new("Frame")
             func.Size = UDim2.fromScale(0.28, 0.42)
             func.Position = UDim2.fromScale(0.97, 0.12)
@@ -494,7 +507,6 @@ task.spawn(function()
             func.BackgroundTransparency = 1
             func.Parent = mobileGui
             
-            -- 体型调节
             local scaleUp = createBtn(func, "ScaleUp", UDim2.fromScale(0, 0), UDim2.fromScale(0.48, 0.14), "变大", 11)
             local scaleDown = createBtn(func, "ScaleDown", UDim2.fromScale(1, 0), UDim2.fromScale(0.48, 0.14), "变小", 11)
             scaleDown.AnchorPoint = Vector2.new(1, 0)
@@ -507,7 +519,6 @@ task.spawn(function()
             bindPress(scaleUp)
             bindPress(scaleDown)
             
-            -- 手长调节
             local reachUp = createBtn(func, "ReachUp", UDim2.fromScale(0, 0.16), UDim2.fromScale(0.48, 0.14), "伸长", 11)
             local reachDown = createBtn(func, "ReachDown", UDim2.fromScale(1, 0.16), UDim2.fromScale(0.48, 0.14), "缩短", 11)
             reachDown.AnchorPoint = Vector2.new(1, 0)
@@ -524,7 +535,6 @@ task.spawn(function()
             bindPress(reachUp)
             bindPress(reachDown)
             
-            -- 抓取范围调节
             local grabUp = createBtn(func, "GrabUp", UDim2.fromScale(0, 0.32), UDim2.fromScale(0.48, 0.14), "抓距+", 11)
             local grabDown = createBtn(func, "GrabDown", UDim2.fromScale(1, 0.32), UDim2.fromScale(0.48, 0.14), "抓距-", 11)
             grabDown.AnchorPoint = Vector2.new(1, 0)
@@ -541,7 +551,6 @@ task.spawn(function()
             bindPress(grabUp)
             bindPress(grabDown)
             
-            -- 速度调节
             local speedUp = createBtn(func, "SpeedUp", UDim2.fromScale(0, 0.48), UDim2.fromScale(0.48, 0.14), "速度+", 11)
             local speedDown = createBtn(func, "SpeedDown", UDim2.fromScale(1, 0.48), UDim2.fromScale(0.48, 0.14), "速度-", 11)
             speedDown.AnchorPoint = Vector2.new(1, 0)
@@ -558,7 +567,6 @@ task.spawn(function()
             bindPress(speedUp)
             bindPress(speedDown)
             
-            -- 抓取模式切换
             local toggleGrab = createBtn(func, "ToggleGrab", UDim2.fromScale(0.5, 0.68), UDim2.fromScale(0.96, 0.14), "模式:长按", 11)
             toggleGrab.AnchorPoint = Vector2.new(0.5, 0)
             toggleGrab.InputBegan:Connect(function(i)
@@ -569,7 +577,6 @@ task.spawn(function()
             end)
             bindPress(toggleGrab)
             
-            -- 视角切换
             local toggleLook = createBtn(func, "ToggleLook", UDim2.fromScale(0.5, 0.86), UDim2.fromScale(0.96, 0.14), "解锁视角", 11)
             toggleLook.AnchorPoint = Vector2.new(0.5, 0)
             toggleLook.InputBegan:Connect(function(i)
@@ -580,34 +587,137 @@ task.spawn(function()
             end)
             bindPress(toggleLook)
 
-            -- 5. 右半屏滑动控制视角
+            -- ========== 虚拟摇杆（左右手方向控制） ==========
+            local function createStick(parent, name, position, size)
+                local base = Instance.new("Frame")
+                base.Name = name.."Base"
+                base.Position = position
+                base.Size = size
+                base.AnchorPoint = Vector2.new(0.5, 0.5)
+                base.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                base.BackgroundTransparency = 0.7
+                base.BorderSizePixel = 0
+                Instance.new("UICorner", base).CornerRadius = UDim.new(1, 0)
+                base.Parent = parent
+
+                local thumb = Instance.new("Frame")
+                thumb.Name = name.."Thumb"
+                thumb.Size = UDim2.fromScale(0.5, 0.5)
+                thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+                thumb.Position = UDim2.fromScale(0.5, 0.5)
+                thumb.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                thumb.BackgroundTransparency = 0.4
+                thumb.BorderSizePixel = 0
+                Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+                thumb.Parent = base
+
+                return base, thumb
+            end
+
+            -- 左摇杆 (0.12, 0.6)
+            local leftBase, leftThumb = createStick(mobileGui, "LeftStick",
+                UDim2.fromScale(0.12, 0.6), UDim2.fromScale(0.14, 0.14))
+            -- 右摇杆 (0.88, 0.6)
+            local rightBase, rightThumb = createStick(mobileGui, "RightStick",
+                UDim2.fromScale(0.88, 0.6), UDim2.fromScale(0.14, 0.14))
+
+            -- 摇杆区域记录（用于区分触摸）
+            local function getStickRegion(base)
+                local pos = base.AbsolutePosition
+                local size = base.AbsoluteSize
+                return Rect.new(pos.X, pos.Y, pos.X + size.X, pos.Y + size.Y)
+            end
+            local leftRegion, rightRegion
+
+            -- 更新摇杆方向
+            local function updateStick(base, thumb, touchPos, dirVar)
+                local center = base.AbsolutePosition + base.AbsoluteSize / 2
+                local radius = base.AbsoluteSize.X / 2
+                local offset = touchPos - center
+                if offset.Magnitude > radius then
+                    offset = offset.Unit * radius
+                end
+                thumb.Position = UDim2.fromOffset(offset.X, offset.Y) + UDim2.fromScale(0.5, 0.5)
+                dirVar = offset / radius   -- 归一化方向
+                return dirVar
+            end
+
+            -- 活动的摇杆触摸ID
+            local activeLeftTouch, activeRightTouch = nil, nil
+            local touchSens = 0.005  -- 触摸视角灵敏度（已加倍）
+
+            -- 更新区域引用（首次及每帧）
+            local function updateRegions()
+                leftRegion = getStickRegion(leftBase)
+                rightRegion = getStickRegion(rightBase)
+            end
+            updateRegions()
+            leftBase:GetPropertyChangedSignal("AbsolutePosition"):Connect(updateRegions)
+            leftBase:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateRegions)
+            rightBase:GetPropertyChangedSignal("AbsolutePosition"):Connect(updateRegions)
+            rightBase:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateRegions)
+
+            -- 触摸开始（覆盖视角滑动检测）
             local touchLook = false
             local lastTouch = Vector2.zero
-            local touchSens = 0.0025
+            local viewport = workspace.CurrentCamera.ViewportSize
+
             UIS.TouchStarted:Connect(function(i)
-                if i.Position.X > workspace.CurrentCamera.ViewportSize.X * 0.5 then
-                    local vpY = workspace.CurrentCamera.ViewportSize.Y
-                    if i.Position.Y < vpY * 0.85 and i.Position.Y > vpY * 0.15 then
+                local pos = i.Position
+                -- 摇杆优先
+                if leftRegion and pos.X >= leftRegion.Min.X and pos.X <= leftRegion.Max.X
+                    and pos.Y >= leftRegion.Min.Y and pos.Y <= leftRegion.Max.Y then
+                    activeLeftTouch = i
+                    leftStickDir = updateStick(leftBase, leftThumb, pos, leftStickDir)
+                    return
+                end
+                if rightRegion and pos.X >= rightRegion.Min.X and pos.X <= rightRegion.Max.X
+                    and pos.Y >= rightRegion.Min.Y and pos.Y <= rightRegion.Max.Y then
+                    activeRightTouch = i
+                    rightStickDir = updateStick(rightBase, rightThumb, pos, rightStickDir)
+                    return
+                end
+                -- 视角滑动
+                if pos.X > viewport.X * 0.5 then
+                    local vpY = viewport.Y
+                    if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
                         touchLook = true
-                        lastTouch = i.Position
+                        lastTouch = pos
                     end
                 end
             end)
+
             UIS.TouchMoved:Connect(function(i)
-                if touchLook then
+                if activeLeftTouch == i then
+                    leftStickDir = updateStick(leftBase, leftThumb, i.Position, leftStickDir)
+                elseif activeRightTouch == i then
+                    rightStickDir = updateStick(rightBase, rightThumb, i.Position, rightStickDir)
+                elseif touchLook then
                     local delta = i.Position - lastTouch
                     yaw = yaw - delta.X * touchSens
                     pitch = math.clamp(pitch - delta.Y * touchSens, -1.45, 1.45)
                     lastTouch = i.Position
                 end
             end)
-            UIS.TouchEnded:Connect(function() touchLook = false end)
+
+            UIS.TouchEnded:Connect(function(i)
+                if activeLeftTouch == i then
+                    activeLeftTouch = nil
+                    leftStickDir = Vector2.zero
+                    leftThumb.Position = UDim2.fromScale(0.5, 0.5)
+                elseif activeRightTouch == i then
+                    activeRightTouch = nil
+                    rightStickDir = Vector2.zero
+                    rightThumb.Position = UDim2.fromScale(0.5, 0.5)
+                elseif touchLook then
+                    touchLook = false
+                end
+            end)
         end
     end)
     print("[NoVR] control active.")
 end)
 ]==]
--- 修复重新加入服务器：回到当前服务器实例
 local function teleportToCurrentServer()
     local ok, err = pcall(function()
         TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
