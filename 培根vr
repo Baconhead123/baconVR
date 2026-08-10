@@ -104,6 +104,10 @@ task.spawn(function()
     local leftStickDir = Vector2.zero
     local rightStickDir = Vector2.zero
 
+    -- 打招呼相关
+    local waveStartTime = 0
+    local WAVE_DURATION = 2.5
+
     local function computeStickRotation(stickDir)
         if stickDir.Magnitude < 0.1 then
             return CFrame.new()
@@ -130,11 +134,18 @@ task.spawn(function()
             if uc == Enum.UserCFrame.LeftHand then
                 local rot = computeStickRotation(leftStickDir)
                 local pos = Vector3.new(-S.spread, S.height, -S.reach) * scale
-                return CFrame.new(pos) * rot   -- 修复：正确组合位置与旋转
+                local cf = CFrame.new(pos) * rot
+                -- 打招呼动画
+                if os.clock() - waveStartTime < WAVE_DURATION then
+                    local t = os.clock() - waveStartTime
+                    local angle = math.sin(t * 12) * 0.6
+                    cf = cf * CFrame.Angles(angle, 0, 0)
+                end
+                return cf
             elseif uc == Enum.UserCFrame.RightHand then
                 local rot = computeStickRotation(rightStickDir)
                 local pos = Vector3.new(S.spread, S.height, -S.reach) * scale
-                return CFrame.new(pos) * rot   -- 修复
+                return CFrame.new(pos) * rot
             end
             return identity
         end
@@ -341,7 +352,7 @@ task.spawn(function()
         end)
     end)
 
-    -- ===================== 移动端控制（含虚拟摇杆） =====================
+    -- ===================== 移动端控制（含虚拟摇杆 + 打招呼） =====================
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
@@ -584,7 +595,7 @@ task.spawn(function()
             end)
             bindPress(toggleLook)
 
-            -- ========== 虚拟摇杆（修复版） ==========
+            -- ========== 虚拟摇杆（彻底修复） ==========
             local function createStick(parent, name, position, size)
                 local base = Instance.new("Frame")
                 base.Name = name.."Base"
@@ -616,6 +627,24 @@ task.spawn(function()
             local rightBase, rightThumb = createStick(mobileGui, "RightStick",
                 UDim2.fromScale(0.88, 0.6), UDim2.fromScale(0.14, 0.14))
 
+            -- 打招呼按钮（左摇杆上方）
+            local waveBtn = createBtn(mobileGui, "WaveBtn",
+                UDim2.fromScale(0.12, 0.48), UDim2.fromScale(0.1, 0.06), "👋", 20)
+            waveBtn.AnchorPoint = Vector2.new(0.5, 1)
+            waveBtn.BackgroundTransparency = 0.5
+            waveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            waveBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    waveStartTime = os.clock()
+                    -- 视觉反馈
+                    waveBtn.BackgroundTransparency = 0.2
+                    task.delay(0.2, function()
+                        waveBtn.BackgroundTransparency = 0.5
+                    end)
+                end
+            end)
+            bindPress(waveBtn)
+
             local function updateStick(base, thumb, touchPos)
                 local center = base.AbsolutePosition + base.AbsoluteSize / 2
                 local radius = base.AbsoluteSize.X / 2
@@ -629,21 +658,13 @@ task.spawn(function()
 
             local activeLeftTouch, activeRightTouch = nil, nil
             local touchSens = 0.005
-            local function getStickRegion(base)
-                local pos = base.AbsolutePosition
-                local size = base.AbsoluteSize
-                return Rect.new(pos.X, pos.Y, pos.X + size.X, pos.Y + size.Y)
+
+            local function isInsideStick(base, pos)
+                local absPos = base.AbsolutePosition
+                local absSize = base.AbsoluteSize
+                return pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                    and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y
             end
-            local leftRegion, rightRegion
-            local function updateRegions()
-                leftRegion = getStickRegion(leftBase)
-                rightRegion = getStickRegion(rightBase)
-            end
-            updateRegions()
-            leftBase:GetPropertyChangedSignal("AbsolutePosition"):Connect(updateRegions)
-            leftBase:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateRegions)
-            rightBase:GetPropertyChangedSignal("AbsolutePosition"):Connect(updateRegions)
-            rightBase:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateRegions)
 
             local touchLook = false
             local lastTouch = Vector2.zero
@@ -651,18 +672,17 @@ task.spawn(function()
 
             UIS.TouchStarted:Connect(function(i)
                 local pos = i.Position
-                if leftRegion and pos.X >= leftRegion.Min.X and pos.X <= leftRegion.Max.X
-                    and pos.Y >= leftRegion.Min.Y and pos.Y <= leftRegion.Max.Y then
+                if isInsideStick(leftBase, pos) then
                     activeLeftTouch = i
                     leftStickDir = updateStick(leftBase, leftThumb, pos)
                     return
                 end
-                if rightRegion and pos.X >= rightRegion.Min.X and pos.X <= rightRegion.Max.X
-                    and pos.Y >= rightRegion.Min.Y and pos.Y <= rightRegion.Max.Y then
+                if isInsideStick(rightBase, pos) then
                     activeRightTouch = i
                     rightStickDir = updateStick(rightBase, rightThumb, pos)
                     return
                 end
+                -- 视角滑动
                 if pos.X > viewport.X * 0.5 then
                     local vpY = viewport.Y
                     if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
