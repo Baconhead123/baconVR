@@ -130,11 +130,11 @@ task.spawn(function()
             if uc == Enum.UserCFrame.LeftHand then
                 local rot = computeStickRotation(leftStickDir)
                 local pos = Vector3.new(-S.spread, S.height, -S.reach) * scale
-                return rot.Rotation + pos
+                return CFrame.new(pos) * rot   -- 修复：正确组合位置与旋转
             elseif uc == Enum.UserCFrame.RightHand then
                 local rot = computeStickRotation(rightStickDir)
                 local pos = Vector3.new(S.spread, S.height, -S.reach) * scale
-                return rot.Rotation + pos
+                return CFrame.new(pos) * rot   -- 修复
             end
             return identity
         end
@@ -611,14 +611,11 @@ task.spawn(function()
                 return base, thumb
             end
 
-            -- 左摇杆 (0.12, 0.6)
             local leftBase, leftThumb = createStick(mobileGui, "LeftStick",
                 UDim2.fromScale(0.12, 0.6), UDim2.fromScale(0.14, 0.14))
-            -- 右摇杆 (0.88, 0.6)
             local rightBase, rightThumb = createStick(mobileGui, "RightStick",
                 UDim2.fromScale(0.88, 0.6), UDim2.fromScale(0.14, 0.14))
 
-            -- 更新摇杆方向（修复：返回方向值）
             local function updateStick(base, thumb, touchPos)
                 local center = base.AbsolutePosition + base.AbsoluteSize / 2
                 local radius = base.AbsoluteSize.X / 2
@@ -654,7 +651,6 @@ task.spawn(function()
 
             UIS.TouchStarted:Connect(function(i)
                 local pos = i.Position
-                -- 摇杆优先
                 if leftRegion and pos.X >= leftRegion.Min.X and pos.X <= leftRegion.Max.X
                     and pos.Y >= leftRegion.Min.Y and pos.Y <= leftRegion.Max.Y then
                     activeLeftTouch = i
@@ -667,7 +663,6 @@ task.spawn(function()
                     rightStickDir = updateStick(rightBase, rightThumb, pos)
                     return
                 end
-                -- 视角滑动
                 if pos.X > viewport.X * 0.5 then
                     local vpY = viewport.Y
                     if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
