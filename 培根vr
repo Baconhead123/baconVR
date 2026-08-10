@@ -101,28 +101,14 @@ task.spawn(function()
         toggleGrabMode = false,
         speedMult = 1,
     }
-    local leftStickDir = Vector2.zero
-    local rightStickDir = Vector2.zero
+
+    -- 手部旋转角度（度）
+    local leftAngleX, leftAngleY, leftAngleZ = 0, 0, 0
+    local rightAngleX, rightAngleY, rightAngleZ = 0, 0, 0
 
     -- 打招呼相关
     local waveStartTime = 0
     local WAVE_DURATION = 2.5
-
-    local function computeStickRotation(stickDir)
-        if stickDir.Magnitude < 0.1 then
-            return CFrame.new()
-        end
-        local dir = stickDir.Unit
-        local camCF = workspace.CurrentCamera.CFrame
-        local target = (camCF.RightVector * dir.X + camCF.UpVector * dir.Y + camCF.LookVector * 0.2).Unit
-        local up = Vector3.new(0, 1, 0)
-        local right = up:Cross(target)
-        if right.Magnitude < 0.01 then
-            right = Vector3.new(1, 0, 0):Cross(target)
-        end
-        up = target:Cross(right)
-        return CFrame.fromMatrix(Vector3.new(), right, up, target)
-    end
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -132,19 +118,18 @@ task.spawn(function()
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
             if uc == Enum.UserCFrame.LeftHand then
-                local rot = computeStickRotation(leftStickDir)
                 local pos = Vector3.new(-S.spread, S.height, -S.reach) * scale
-                local cf = CFrame.new(pos) * rot
+                local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
                 -- 打招呼动画
                 if os.clock() - waveStartTime < WAVE_DURATION then
                     local t = os.clock() - waveStartTime
-                    local angle = math.sin(t * 12) * 0.6
-                    cf = cf * CFrame.Angles(angle, 0, 0)
+                    local wave = math.sin(t * 12) * 0.6
+                    rot = rot * CFrame.Angles(wave, 0, 0)
                 end
-                return cf
+                return CFrame.new(pos) * rot
             elseif uc == Enum.UserCFrame.RightHand then
-                local rot = computeStickRotation(rightStickDir)
                 local pos = Vector3.new(S.spread, S.height, -S.reach) * scale
+                local rot = CFrame.Angles(math.rad(rightAngleX), math.rad(rightAngleY), math.rad(rightAngleZ))
                 return CFrame.new(pos) * rot
             end
             return identity
@@ -352,7 +337,7 @@ task.spawn(function()
         end)
     end)
 
-    -- ===================== 移动端控制（含虚拟摇杆 + 打招呼） =====================
+    -- ===================== 移动端控制（角度滑块 + 打招呼） =====================
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
@@ -388,7 +373,7 @@ task.spawn(function()
                 end)
             end
 
-            -- 方向键、升降、抓取等
+            -- 方向键、升降、抓取等（保持不变）
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -595,92 +580,170 @@ task.spawn(function()
             end)
             bindPress(toggleLook)
 
-            -- ========== 虚拟摇杆（彻底修复） ==========
-            local function createStick(parent, name, position, size)
-                local base = Instance.new("Frame")
-                base.Name = name.."Base"
-                base.Position = position
-                base.Size = size
-                base.AnchorPoint = Vector2.new(0.5, 0.5)
-                base.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-                base.BackgroundTransparency = 0.7
-                base.BorderSizePixel = 0
-                Instance.new("UICorner", base).CornerRadius = UDim.new(1, 0)
-                base.Parent = parent
+            -- ========== 角度滑块替换摇杆 ==========
+            local sliders = {}
+            local activeSliderTouches = {}
+
+            local function createSlider(parent, name, posX, posY, angleRef)
+                local track = Instance.new("Frame")
+                track.Name = name.."Track"
+                track.Size = UDim2.fromScale(0.14, 0.03)
+                track.Position = UDim2.fromScale(posX, posY)
+                track.AnchorPoint = Vector2.new(0.5, 0.5)
+                track.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+                track.BackgroundTransparency = 0.5
+                track.BorderSizePixel = 0
+                Instance.new("UICorner", track).CornerRadius = UDim.new(0, 4)
+                track.Parent = parent
 
                 local thumb = Instance.new("Frame")
                 thumb.Name = name.."Thumb"
-                thumb.Size = UDim2.fromScale(0.5, 0.5)
+                thumb.Size = UDim2.fromScale(0.03, 0.025)
                 thumb.AnchorPoint = Vector2.new(0.5, 0.5)
                 thumb.Position = UDim2.fromScale(0.5, 0.5)
                 thumb.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-                thumb.BackgroundTransparency = 0.4
+                thumb.BackgroundTransparency = 0.3
                 thumb.BorderSizePixel = 0
-                Instance.new("UICorner", thumb).CornerRadius = UDim.new(1, 0)
-                thumb.Parent = base
+                Instance.new("UICorner", thumb).CornerRadius = UDim.new(0, 4)
+                thumb.Parent = track
 
-                return base, thumb
+                local slider = {
+                    track = track,
+                    thumb = thumb,
+                    min = -360,
+                    max = 360,
+                    angleRef = angleRef,  -- 表引用 {obj, key} 或直接变量？我们使用函数更新
+                    updateAngle = function(value) end,
+                }
+                table.insert(sliders, slider)
+                return slider
             end
 
-            local leftBase, leftThumb = createStick(mobileGui, "LeftStick",
-                UDim2.fromScale(0.12, 0.6), UDim2.fromScale(0.14, 0.14))
-            local rightBase, rightThumb = createStick(mobileGui, "RightStick",
-                UDim2.fromScale(0.88, 0.6), UDim2.fromScale(0.14, 0.14))
+            -- 创建左手滑块 (X=0.12, Y: Z=0.45, Y=0.51, X=0.57)
+            local leftZSlider = createSlider(mobileGui, "LeftZ", 0.12, 0.45, nil)
+            local leftYSlider = createSlider(mobileGui, "LeftY", 0.12, 0.51, nil)
+            local leftXSlider = createSlider(mobileGui, "LeftX", 0.12, 0.57, nil)
 
-            -- 打招呼按钮（左摇杆上方）
+            leftZSlider.updateAngle = function(value) leftAngleZ = value end
+            leftYSlider.updateAngle = function(value) leftAngleY = value end
+            leftXSlider.updateAngle = function(value) leftAngleX = value end
+
+            -- 创建右手滑块 (X=0.88, Y: Z=0.45, Y=0.51, X=0.57)
+            local rightZSlider = createSlider(mobileGui, "RightZ", 0.88, 0.45, nil)
+            local rightYSlider = createSlider(mobileGui, "RightY", 0.88, 0.51, nil)
+            local rightXSlider = createSlider(mobileGui, "RightX", 0.88, 0.57, nil)
+
+            rightZSlider.updateAngle = function(value) rightAngleZ = value end
+            rightYSlider.updateAngle = function(value) rightAngleY = value end
+            rightXSlider.updateAngle = function(value) rightAngleX = value end
+
+            -- 打招呼按钮（左滑块上方）
             local waveBtn = createBtn(mobileGui, "WaveBtn",
-                UDim2.fromScale(0.12, 0.48), UDim2.fromScale(0.1, 0.06), "👋", 20)
+                UDim2.fromScale(0.12, 0.40), UDim2.fromScale(0.1, 0.05), "👋", 20)
             waveBtn.AnchorPoint = Vector2.new(0.5, 1)
-            waveBtn.BackgroundTransparency = 0.5
-            waveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             waveBtn.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch then
                     waveStartTime = os.clock()
-                    -- 视觉反馈
-                    waveBtn.BackgroundTransparency = 0.2
-                    task.delay(0.2, function()
-                        waveBtn.BackgroundTransparency = 0.5
-                    end)
                 end
             end)
             bindPress(waveBtn)
 
-            local function updateStick(base, thumb, touchPos)
-                local center = base.AbsolutePosition + base.AbsoluteSize / 2
-                local radius = base.AbsoluteSize.X / 2
-                local offset = touchPos - center
-                if offset.Magnitude > radius then
-                    offset = offset.Unit * radius
+            -- 判断触摸点是否在某个滑块轨道内
+            local function findSliderAt(pos)
+                for _, slider in ipairs(sliders) do
+                    local track = slider.track
+                    local absPos = track.AbsolutePosition
+                    local absSize = track.AbsoluteSize
+                    if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                        and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                        return slider
+                    end
                 end
-                thumb.Position = UDim2.fromOffset(offset.X, offset.Y) + UDim2.fromScale(0.5, 0.5)
-                return offset / radius
+                return nil
             end
 
-            local activeLeftTouch, activeRightTouch = nil, nil
-            local touchSens = 0.005
+            -- 更新滑块值和拇指位置
+            local function updateSliderValue(slider, touchPos)
+                local track = slider.track
+                local absPos = track.AbsolutePosition
+                local absSize = track.AbsoluteSize
+                local thumbSize = slider.thumb.AbsoluteSize
+                local minX = absPos.X + thumbSize.X / 2
+                local maxX = absPos.X + absSize.X - thumbSize.X / 2
+                local clampedX = math.clamp(touchPos.X, minX, maxX)
+                local ratio = (clampedX - minX) / (maxX - minX)
+                local angle = slider.min + (slider.max - slider.min) * ratio
+                angle = math.clamp(angle, slider.min, slider.max)
+                -- 更新拇指位置
+                local thumbX = (ratio - 0.5) * (absSize.X - thumbSize.X)
+                slider.thumb.Position = UDim2.fromOffset(thumbX, 0) + UDim2.fromScale(0.5, 0.5)
+                -- 调用更新函数
+                slider.updateAngle(angle)
+            end
 
-            local function isInsideStick(base, pos)
-                local absPos = base.AbsolutePosition
-                local absSize = base.AbsoluteSize
-                return pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                    and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y
+            -- 收集所有需要阻止视角的控件区域（用于全局触摸判断）
+            local function isInsideAnyControl(pos)
+                -- 检查滑块
+                for _, slider in ipairs(sliders) do
+                    local track = slider.track
+                    local absPos = track.AbsolutePosition
+                    local absSize = track.AbsoluteSize
+                    if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                        and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                        return true
+                    end
+                end
+                -- 检查打招呼按钮
+                local btnAbsPos = waveBtn.AbsolutePosition
+                local btnAbsSize = waveBtn.AbsoluteSize
+                if pos.X >= btnAbsPos.X and pos.X <= btnAbsPos.X + btnAbsSize.X
+                    and pos.Y >= btnAbsPos.Y and pos.Y <= btnAbsPos.Y + btnAbsSize.Y then
+                    return true
+                end
+                -- 其他按钮、方向键等由于有自己事件，这里简单处理：检测它们所在的容器区域？
+                -- 为简化，我们只检测左侧主要控件区域（方向键和升降）
+                local dpadPos = dpad.AbsolutePosition
+                local dpadSize = dpad.AbsoluteSize
+                if pos.X >= dpadPos.X and pos.X <= dpadPos.X + dpadSize.X
+                    and pos.Y >= dpadPos.Y and pos.Y <= dpadPos.Y + dpadSize.Y then
+                    return true
+                end
+                local vertPos = vert.AbsolutePosition
+                local vertSize = vert.AbsoluteSize
+                if pos.X >= vertPos.X and pos.X <= vertPos.X + vertSize.X
+                    and pos.Y >= vertPos.Y and pos.Y <= vertPos.Y + vertSize.Y then
+                    return true
+                end
+                local grabPos = grab.AbsolutePosition
+                local grabSize = grab.AbsoluteSize
+                if pos.X >= grabPos.X and pos.X <= grabPos.X + grabSize.X
+                    and pos.Y >= grabPos.Y and pos.Y <= grabPos.Y + grabSize.Y then
+                    return true
+                end
+                local funcPos = func.AbsolutePosition
+                local funcSize = func.AbsoluteSize
+                if pos.X >= funcPos.X and pos.X <= funcPos.X + funcSize.X
+                    and pos.Y >= funcPos.Y and pos.Y <= funcPos.Y + funcSize.Y then
+                    return true
+                end
+                return false
             end
 
             local touchLook = false
             local lastTouch = Vector2.zero
+            local touchSens = 0.005
             local viewport = workspace.CurrentCamera.ViewportSize
 
             UIS.TouchStarted:Connect(function(i)
                 local pos = i.Position
-                if isInsideStick(leftBase, pos) then
-                    activeLeftTouch = i
-                    leftStickDir = updateStick(leftBase, leftThumb, pos)
+                local slider = findSliderAt(pos)
+                if slider then
+                    activeSliderTouches[i] = slider
+                    updateSliderValue(slider, pos)
                     return
                 end
-                if isInsideStick(rightBase, pos) then
-                    activeRightTouch = i
-                    rightStickDir = updateStick(rightBase, rightThumb, pos)
-                    return
+                if isInsideAnyControl(pos) then
+                    return  -- 忽略其他控件区域，避免干扰
                 end
                 -- 视角滑动
                 if pos.X > viewport.X * 0.5 then
@@ -693,10 +756,9 @@ task.spawn(function()
             end)
 
             UIS.TouchMoved:Connect(function(i)
-                if activeLeftTouch == i then
-                    leftStickDir = updateStick(leftBase, leftThumb, i.Position)
-                elseif activeRightTouch == i then
-                    rightStickDir = updateStick(rightBase, rightThumb, i.Position)
+                local slider = activeSliderTouches[i]
+                if slider then
+                    updateSliderValue(slider, i.Position)
                 elseif touchLook then
                     local delta = i.Position - lastTouch
                     yaw = yaw - delta.X * touchSens
@@ -706,14 +768,8 @@ task.spawn(function()
             end)
 
             UIS.TouchEnded:Connect(function(i)
-                if activeLeftTouch == i then
-                    activeLeftTouch = nil
-                    leftStickDir = Vector2.zero
-                    leftThumb.Position = UDim2.fromScale(0.5, 0.5)
-                elseif activeRightTouch == i then
-                    activeRightTouch = nil
-                    rightStickDir = Vector2.zero
-                    rightThumb.Position = UDim2.fromScale(0.5, 0.5)
+                if activeSliderTouches[i] then
+                    activeSliderTouches[i] = nil
                 elseif touchLook then
                     touchLook = false
                 end
