@@ -106,17 +106,15 @@ task.spawn(function()
         speedMult = 1,
     }
 
-    -- 手部旋转角度（度）
     local leftAngleX, leftAngleY, leftAngleZ = 0, 0, 0
     local rightAngleX, rightAngleY, rightAngleZ = 0, 0, 0
 
-    -- 打招呼相关
+    -- 打招呼
     local waveStartTime = 0
     local WAVE_DURATION = 2.5
-
-    -- 手指状态 0=伸 1=握
-    local leftFingers = { thumb = 0, index = 0, middle = 0, ring = 0, pinky = 0 }
-    local rightFingers = { thumb = 0, index = 0, middle = 0, ring = 0, pinky = 0 }
+    -- 鼓掌
+    local clapStartTime = 0
+    local CLAP_DURATION = 2.0
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -126,18 +124,31 @@ task.spawn(function()
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
             if uc == Enum.UserCFrame.LeftHand then
-                local pos = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
+                local basePos = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
                 local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
+                -- 打招呼动画
                 if os.clock() - waveStartTime < WAVE_DURATION then
                     local t = os.clock() - waveStartTime
                     local wave = math.sin(t * 12) * 0.6
                     rot = rot * CFrame.Angles(wave, 0, 0)
                 end
-                return CFrame.new(pos) * rot
+                -- 鼓掌动画（双手快速靠近-分离）
+                if os.clock() - clapStartTime < CLAP_DURATION then
+                    local t = os.clock() - clapStartTime
+                    local offset = math.sin(t * 25) * 0.15 * scale
+                    basePos = basePos + Vector3.new(offset, 0, 0)
+                end
+                return CFrame.new(basePos) * rot
             elseif uc == Enum.UserCFrame.RightHand then
-                local pos = Vector3.new(S.spread, S.height, -S.rightReach) * scale
+                local basePos = Vector3.new(S.spread, S.height, -S.rightReach) * scale
                 local rot = CFrame.Angles(math.rad(rightAngleX), math.rad(rightAngleY), math.rad(rightAngleZ))
-                return CFrame.new(pos) * rot
+                -- 鼓掌动画（双手靠近）
+                if os.clock() - clapStartTime < CLAP_DURATION then
+                    local t = os.clock() - clapStartTime
+                    local offset = -math.sin(t * 25) * 0.15 * scale
+                    basePos = basePos + Vector3.new(offset, 0, 0)
+                end
+                return CFrame.new(basePos) * rot
             end
             return identity
         end
@@ -234,6 +245,8 @@ task.spawn(function()
             if io.KeyCode == Enum.KeyCode.Semicolon then S.speedMult = math.clamp(S.speedMult - 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.Quote then S.speedMult = math.clamp(S.speedMult + 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.G then S.toggleGrabMode = not S.toggleGrabMode end
+            -- 鼓掌快捷键（PC）
+            if io.KeyCode == Enum.KeyCode.H then clapStartTime = os.clock() end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -283,12 +296,12 @@ task.spawn(function()
         end
     end)
 
-    -- PC端滚轮：Shift/Control区分左右手
+    -- PC端滚轮：Shift/Ctrl区分左右手（最大伸长值改为10）
     UIS.InputChanged:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.MouseWheel then
             local delta = -io.Position.Z * 0.07
             if keys[Enum.KeyCode.LeftShift] and not keys[Enum.KeyCode.LeftControl] then
-                S.rightReach = math.clamp(S.rightReach + delta, 0.05, 10)  -- 上限减半
+                S.rightReach = math.clamp(S.rightReach + delta, 0.05, 10)
             elseif keys[Enum.KeyCode.LeftControl] and not keys[Enum.KeyCode.LeftShift] then
                 S.leftReach = math.clamp(S.leftReach + delta, 0.05, 10)
             else
@@ -332,7 +345,7 @@ task.spawn(function()
         local lbl = Instance.new("TextLabel", gui)
         lbl.AnchorPoint = Vector2.new(1, 0)
         lbl.Position = UDim2.new(1, -10, 0, 10)
-        lbl.Size = UDim2.new(0, 380, 0, 240)
+        lbl.Size = UDim2.new(0, 380, 0, 260)
         lbl.BackgroundColor3 = Color3.fromRGB(0,0,0); lbl.BackgroundTransparency = 0.45
         lbl.TextColor3 = Color3.fromRGB(255,255,255)
         lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Top
@@ -344,7 +357,8 @@ task.spawn(function()
             .."LMB/RMB - grab objects (R/L)\n"
             .."E/Q - pinch: grab PLAYERS (R/L)\n"
             .."Wheel - reach (Shift=right, Ctrl=left)\n"
-            .."LReach: %.2f | RReach: %.2f\n"
+            .."LReach: %.2f | RReach: %.2f (max 10)\n"
+            .."H - clap (PC) | 👋 wave | 👏 clap\n"
             .."+/- - body size: %.1f/100\n"
             .."[/] - grab radius: %.1fx\n"
             ..";/' - move speed: %.1fx\n"
@@ -354,7 +368,7 @@ task.spawn(function()
         end)
     end)
 
-    -- ===================== 移动端控制（角度滑块 + 长度滑块 + 手指按钮 + 打招呼） =====================
+    -- ===================== 移动端控制 =====================
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
@@ -390,7 +404,7 @@ task.spawn(function()
                 end)
             end
 
-            -- 方向键、升降、抓取等
+            -- 方向键、升降、抓取等（保持不变）
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -516,7 +530,7 @@ task.spawn(function()
             func.AnchorPoint = Vector2.new(1, 0)
             func.BackgroundTransparency = 1
             func.Parent = mobileGui
-
+            
             local scaleUp = createBtn(func, "ScaleUp", UDim2.fromScale(0, 0), UDim2.fromScale(0.48, 0.14), "变大", 11)
             local scaleDown = createBtn(func, "ScaleDown", UDim2.fromScale(1, 0), UDim2.fromScale(0.48, 0.14), "变小", 11)
             scaleDown.AnchorPoint = Vector2.new(1, 0)
@@ -544,7 +558,7 @@ task.spawn(function()
             end)
             bindPress(grabUp)
             bindPress(grabDown)
-
+            
             local speedUp = createBtn(func, "SpeedUp", UDim2.fromScale(0, 0.48), UDim2.fromScale(0.48, 0.14), "速度+", 11)
             local speedDown = createBtn(func, "SpeedDown", UDim2.fromScale(1, 0.48), UDim2.fromScale(0.48, 0.14), "速度-", 11)
             speedDown.AnchorPoint = Vector2.new(1, 0)
@@ -560,7 +574,7 @@ task.spawn(function()
             end)
             bindPress(speedUp)
             bindPress(speedDown)
-
+            
             local toggleGrab = createBtn(func, "ToggleGrab", UDim2.fromScale(0.5, 0.68), UDim2.fromScale(0.96, 0.14), "模式:长按", 11)
             toggleGrab.AnchorPoint = Vector2.new(0.5, 0)
             toggleGrab.InputBegan:Connect(function(i)
@@ -570,7 +584,7 @@ task.spawn(function()
                 end
             end)
             bindPress(toggleGrab)
-
+            
             local toggleLook = createBtn(func, "ToggleLook", UDim2.fromScale(0.5, 0.86), UDim2.fromScale(0.96, 0.14), "解锁视角", 11)
             toggleLook.AnchorPoint = Vector2.new(0.5, 0)
             toggleLook.InputBegan:Connect(function(i)
@@ -581,7 +595,7 @@ task.spawn(function()
             end)
             bindPress(toggleLook)
 
-            -- ========== 角度滑块（水平） ==========
+            -- ========== 角度滑块 ==========
             local sliders = {}
             local activeSliderTouches = {}
 
@@ -621,21 +635,19 @@ task.spawn(function()
                 return slider
             end
 
-            -- 左手角度滑块
             createHorizontalSlider(mobileGui, "LeftXAngle", 0.12, 0.57, -360, 360, 0, function(val) leftAngleX = val end)
             createHorizontalSlider(mobileGui, "LeftYAngle", 0.12, 0.51, -360, 360, 0, function(val) leftAngleY = val end)
             createHorizontalSlider(mobileGui, "LeftZAngle", 0.12, 0.45, -360, 360, 0, function(val) leftAngleZ = val end)
 
-            -- 右手角度滑块
             createHorizontalSlider(mobileGui, "RightXAngle", 0.88, 0.57, -360, 360, 0, function(val) rightAngleX = val end)
             createHorizontalSlider(mobileGui, "RightYAngle", 0.88, 0.51, -360, 360, 0, function(val) rightAngleY = val end)
             createHorizontalSlider(mobileGui, "RightZAngle", 0.88, 0.45, -360, 360, 0, function(val) rightAngleZ = val end)
 
-            -- ========== 左右手长度垂直滑块 ==========
+            -- ========== 垂直长度滑块（最大10，高度0.24） ==========
             local function createVerticalSlider(parent, name, posX, posY, heightScale, minVal, maxVal, initVal, updateFunc)
                 local track = Instance.new("Frame")
                 track.Name = name.."Track"
-                track.Size = UDim2.fromScale(0.03, heightScale)
+                track.Size = UDim2.fromScale(0.03, heightScale)   -- heightScale 现在为 0.24
                 track.Position = UDim2.fromScale(posX, posY)
                 track.AnchorPoint = Vector2.new(0.5, 0.5)
                 track.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
@@ -668,54 +680,10 @@ task.spawn(function()
                 return slider
             end
 
-            createVerticalSlider(mobileGui, "LeftReach", 0.05, 0.50, 0.12, 0.05, 10, S.leftReach, function(val) S.leftReach = val end)
-            createVerticalSlider(mobileGui, "RightReach", 0.95, 0.50, 0.12, 0.05, 10, S.rightReach, function(val) S.rightReach = val end)
+            createVerticalSlider(mobileGui, "LeftReach", 0.05, 0.50, 0.24, 0.05, 10, S.leftReach, function(val) S.leftReach = val end)
+            createVerticalSlider(mobileGui, "RightReach", 0.95, 0.50, 0.24, 0.05, 10, S.rightReach, function(val) S.rightReach = val end)
 
-            -- ========== 手指控制按钮 ==========
-            local fingerFrames = {}  -- 用于检测区域
-            local fingerNames = {"拇指", "食指", "中指", "无名指", "小指"}
-            local fingerKeys = {"thumb", "index", "middle", "ring", "pinky"}
-
-            local function createFingerButtons(parent, side, posX, startY, fingersTable)
-                local frame = Instance.new("Frame")
-                frame.Name = side.."FingerFrame"
-                frame.Position = UDim2.fromScale(posX, startY)
-                frame.AnchorPoint = Vector2.new(0.5, 0)
-                frame.BackgroundTransparency = 1
-                frame.Size = UDim2.fromScale(0.12, 0.01)
-                frame.AutomaticSize = Enum.AutomaticSize.Y
-                frame.Parent = parent
-                table.insert(fingerFrames, frame)
-
-                local buttons = {}
-                for i, key in ipairs(fingerKeys) do
-                    local y = (i-1) * 0.045
-                    local btn = createBtn(frame, side..key, UDim2.fromScale(0, y), UDim2.fromScale(1, 0.04),
-                        side..fingerNames[i]..":伸", 12)
-                    btn.AnchorPoint = Vector2.new(0, 0)
-                    btn.BackgroundTransparency = 0.5
-                    btn.InputBegan:Connect(function(io)
-                        if io.UserInputType == Enum.UserInputType.Touch and Input then
-                            fingersTable[key] = 1 - fingersTable[key]
-                            local state = fingersTable[key] == 1 and "握" or "伸"
-                            btn.Text = side..fingerNames[i]..":"..state
-                            -- 更新Input对象对应字段
-                            local inputKey = (side == "左" and "l" or "r") .. (key:sub(1,1):upper()..key:sub(2))
-                            if Input[inputKey] ~= nil then
-                                Input[inputKey] = fingersTable[key]
-                            end
-                        end
-                    end)
-                    bindPress(btn)
-                    buttons[i] = btn
-                end
-                return buttons
-            end
-
-            createFingerButtons(mobileGui, "左", 0.12, 0.63, leftFingers)
-            createFingerButtons(mobileGui, "右", 0.88, 0.63, rightFingers)
-
-            -- 打招呼按钮（左滑块上方）
+            -- 打招呼按钮
             local waveBtn = createBtn(mobileGui, "WaveBtn",
                 UDim2.fromScale(0.12, 0.40), UDim2.fromScale(0.1, 0.05), "👋", 20)
             waveBtn.AnchorPoint = Vector2.new(0.5, 1)
@@ -726,7 +694,18 @@ task.spawn(function()
             end)
             bindPress(waveBtn)
 
-            -- 查找滑块逻辑
+            -- 鼓掌按钮（位于打招呼上方）
+            local clapBtn = createBtn(mobileGui, "ClapBtn",
+                UDim2.fromScale(0.12, 0.36), UDim2.fromScale(0.1, 0.05), "👏", 20)
+            clapBtn.AnchorPoint = Vector2.new(0.5, 1)
+            clapBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    clapStartTime = os.clock()
+                end
+            end)
+            bindPress(clapBtn)
+
+            -- 触摸判断逻辑
             local function findSliderAt(pos)
                 for _, slider in ipairs(sliders) do
                     local track = slider.track
@@ -740,7 +719,6 @@ task.spawn(function()
                 return nil
             end
 
-            -- 更新水平滑块
             local function updateHorizontalSlider(slider, touchPos)
                 local track = slider.track
                 local absPos = track.AbsolutePosition
@@ -757,7 +735,6 @@ task.spawn(function()
                 slider.update(value)
             end
 
-            -- 更新垂直滑块
             local function updateVerticalSlider(slider, touchPos)
                 local track = slider.track
                 local absPos = track.AbsolutePosition
@@ -766,7 +743,7 @@ task.spawn(function()
                 local minY = absPos.Y + thumbSize.Y / 2
                 local maxY = absPos.Y + absSize.Y - thumbSize.Y / 2
                 local clampedY = math.clamp(touchPos.Y, minY, maxY)
-                local ratio = 1 - (clampedY - minY) / (maxY - minY)
+                local ratio = 1 - (clampedY - minY) / (maxY - minY)   -- top = max
                 local value = slider.min + (slider.max - slider.min) * ratio
                 value = math.clamp(value, slider.min, slider.max)
                 local thumbY = (0.5 - ratio) * (absSize.Y - thumbSize.Y)
@@ -784,21 +761,16 @@ task.spawn(function()
                         return true
                     end
                 end
-                local btnAbsPos = waveBtn.AbsolutePosition
-                local btnAbsSize = waveBtn.AbsoluteSize
-                if pos.X >= btnAbsPos.X and pos.X <= btnAbsPos.X + btnAbsSize.X
-                    and pos.Y >= btnAbsPos.Y and pos.Y <= btnAbsPos.Y + btnAbsSize.Y then
-                    return true
-                end
-                -- 检查手指按钮区域
-                for _, fingerFrame in ipairs(fingerFrames) do
-                    local fPos = fingerFrame.AbsolutePosition
-                    local fSize = fingerFrame.AbsoluteSize
-                    if pos.X >= fPos.X and pos.X <= fPos.X + fSize.X
-                        and pos.Y >= fPos.Y and pos.Y <= fPos.Y + fSize.Y then
+                -- 检查两个动画按钮
+                for _, btn in ipairs({waveBtn, clapBtn}) do
+                    local btnAbsPos = btn.AbsolutePosition
+                    local btnAbsSize = btn.AbsoluteSize
+                    if pos.X >= btnAbsPos.X and pos.X <= btnAbsPos.X + btnAbsSize.X
+                        and pos.Y >= btnAbsPos.Y and pos.Y <= btnAbsPos.Y + btnAbsSize.Y then
                         return true
                     end
                 end
+                -- 其他控件区域
                 local dpadPos = dpad.AbsolutePosition
                 local dpadSize = dpad.AbsoluteSize
                 if pos.X >= dpadPos.X and pos.X <= dpadPos.X + dpadSize.X
