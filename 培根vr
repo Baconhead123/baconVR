@@ -117,8 +117,9 @@ task.spawn(function()
     local flexStartTime, flexDuration = 0, 2.0
     local punchStartTime, punchDuration = 0, 0.5
     local blockStartTime, blockDuration = 0, 2.0
-    local throwStartTime, throwDuration = 0, 0.3
-    local throwingHand = nil  -- "left" or "right"
+    local throwStartTime, throwDuration = 0, 0.4
+    local throwingHand = nil
+    local throwReleasePending = nil   -- 标记需要在下一帧释放抓取
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -127,35 +128,55 @@ task.spawn(function()
         VRUtils.GetUserCFrame = function(uc, scale)
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
+            local now = os.clock()
+
+            if throwingHand and now - throwStartTime >= throwDuration then
+                throwingHand = nil
+                throwReleasePending = nil
+            end
+
             if uc == Enum.UserCFrame.LeftHand then
                 local offset = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
                 local headRot = CFrame.Angles(math.rad(headRotX), math.rad(headRotY), math.rad(headRotZ))
                 local basePos = (headRot * CFrame.new(offset)).Position
                 local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
 
-                -- 扔出惯性
-                if throwingHand == "left" and os.clock() - throwStartTime < throwDuration then
-                    local t = os.clock() - throwStartTime
-                    local force = (1 - t / throwDuration) * 0.6 * scale
+                -- 投掷动画
+                if throwingHand == "left" then
+                    local t = now - throwStartTime
+                    local maxOffset = 0.8 * scale
+                    local force
+                    if t < throwDuration / 2 then
+                        force = (t / (throwDuration / 2)) * maxOffset
+                    else
+                        force = (1 - (t - throwDuration / 2) / (throwDuration / 2)) * maxOffset
+                    end
                     basePos = basePos + cam.CFrame.LookVector * force
+                    -- 延迟释放抓取
+                    if throwReleasePending == "left" and t > 0.02 then
+                        if Input then
+                            Input.lFist = 0; Input.lIndex = 0
+                        end
+                        throwReleasePending = nil
+                    end
                 end
 
-                -- 打招呼
-                if os.clock() - waveStartTime < waveDuration then
-                    local t = os.clock() - waveStartTime
+                -- 其他动画（打招呼等）
+                if now - waveStartTime < waveDuration then
+                    local t = now - waveStartTime
                     rot = rot * CFrame.Angles(math.sin(t * 12) * 0.6, 0, 0)
                 end
-                if os.clock() - clapStartTime < clapDuration then
-                    local t = os.clock() - clapStartTime
+                if now - clapStartTime < clapDuration then
+                    local t = now - clapStartTime
                     basePos = basePos + Vector3.new(math.sin(t * 25) * 0.15 * scale, 0, 0)
                 end
-                if os.clock() - startleStartTime < startleDuration then
-                    local t = os.clock() - startleStartTime
+                if now - startleStartTime < startleDuration then
+                    local t = now - startleStartTime
                     local shake = math.sin(t * 30) * 0.08 * scale
                     basePos = basePos + Vector3.new(-0.3 * scale + shake, shake, shake)
                     rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
                 end
-                if os.clock() - blockStartTime < blockDuration then
+                if now - blockStartTime < blockDuration then
                     basePos = Vector3.new(-0.15 * scale, 0.2 * scale, 0.1 * scale)
                     rot = CFrame.Angles(0, math.rad(30), math.rad(-20))
                 end
@@ -166,34 +187,46 @@ task.spawn(function()
                 local basePos = (headRot * CFrame.new(offset)).Position
                 local rot = CFrame.Angles(math.rad(rightAngleX), math.rad(rightAngleY), math.rad(rightAngleZ))
 
-                if throwingHand == "right" and os.clock() - throwStartTime < throwDuration then
-                    local t = os.clock() - throwStartTime
-                    local force = (1 - t / throwDuration) * 0.6 * scale
+                if throwingHand == "right" then
+                    local t = now - throwStartTime
+                    local maxOffset = 0.8 * scale
+                    local force
+                    if t < throwDuration / 2 then
+                        force = (t / (throwDuration / 2)) * maxOffset
+                    else
+                        force = (1 - (t - throwDuration / 2) / (throwDuration / 2)) * maxOffset
+                    end
                     basePos = basePos + cam.CFrame.LookVector * force
+                    if throwReleasePending == "right" and t > 0.02 then
+                        if Input then
+                            Input.rFist = 0; Input.rIndex = 0
+                        end
+                        throwReleasePending = nil
+                    end
                 end
 
-                if os.clock() - clapStartTime < clapDuration then
-                    local t = os.clock() - clapStartTime
+                if now - clapStartTime < clapDuration then
+                    local t = now - clapStartTime
                     basePos = basePos + Vector3.new(-math.sin(t * 25) * 0.15 * scale, 0, 0)
                 end
-                if os.clock() - startleStartTime < startleDuration then
-                    local t = os.clock() - startleStartTime
+                if now - startleStartTime < startleDuration then
+                    local t = now - startleStartTime
                     local shake = math.sin(t * 30) * 0.08 * scale
                     basePos = basePos + Vector3.new(0.3 * scale + shake, shake, -shake)
                     rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
                 end
-                if os.clock() - flexStartTime < flexDuration then
-                    local t = os.clock() - flexStartTime
+                if now - flexStartTime < flexDuration then
+                    local t = now - flexStartTime
                     local flex = math.min(t / 0.3, 1)
                     basePos = basePos + Vector3.new(0, 0.4 * flex * scale, 0.3 * flex * scale)
                     rot = rot * CFrame.Angles(math.rad(-90 * flex), 0, math.rad(-20 * flex))
                 end
-                if os.clock() - punchStartTime < punchDuration then
-                    local t = os.clock() - punchStartTime
+                if now - punchStartTime < punchDuration then
+                    local t = now - punchStartTime
                     local forward = math.sin(t * 12) * 0.6 * scale
                     basePos = basePos + Vector3.new(0, 0, -forward)
                 end
-                if os.clock() - blockStartTime < blockDuration then
+                if now - blockStartTime < blockDuration then
                     basePos = Vector3.new(0.15 * scale, 0.2 * scale, 0.1 * scale)
                     rot = CFrame.Angles(0, math.rad(-30), math.rad(20))
                 end
@@ -284,18 +317,17 @@ task.spawn(function()
     end
     setLook(true)
 
-    -- 扔出辅助函数
+    -- 投掷辅助函数
     local function doThrow()
         if Input.rFist == 1 then
             throwingHand = "right"
-            Input.rFist = 0; Input.rIndex = 0
+            throwStartTime = os.clock()
+            throwReleasePending = "right"   -- 延迟释放
         elseif Input.lFist == 1 then
             throwingHand = "left"
-            Input.lFist = 0; Input.lIndex = 0
-        else
-            return  -- 没有抓取，不执行
+            throwStartTime = os.clock()
+            throwReleasePending = "left"
         end
-        throwStartTime = os.clock()
     end
 
     UIS.InputBegan:Connect(function(io)
