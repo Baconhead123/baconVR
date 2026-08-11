@@ -108,8 +108,6 @@ task.spawn(function()
 
     local leftAngleX, leftAngleY, leftAngleZ = 0, 0, 0
     local rightAngleX, rightAngleY, rightAngleZ = 0, 0, 0
-
-    -- 绕头旋转角度
     local headRotX, headRotY, headRotZ = 0, 0, 0
 
     -- 动作计时器
@@ -117,8 +115,10 @@ task.spawn(function()
     local clapStartTime, clapDuration = 0, 2.0
     local startleStartTime, startleDuration = 0, 1.5
     local flexStartTime, flexDuration = 0, 2.0
-    local punchStartTime, punchDuration = 0, 0.5    -- 挥拳
-    local blockStartTime, blockDuration = 0, 2.0    -- 防御
+    local punchStartTime, punchDuration = 0, 0.5
+    local blockStartTime, blockDuration = 0, 2.0
+    local throwStartTime, throwDuration = 0, 0.3
+    local throwingHand = nil  -- "left" or "right"
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -128,38 +128,37 @@ task.spawn(function()
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
             if uc == Enum.UserCFrame.LeftHand then
-                -- 基础位置
                 local offset = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
-                -- 应用绕头旋转
                 local headRot = CFrame.Angles(math.rad(headRotX), math.rad(headRotY), math.rad(headRotZ))
                 local basePos = (headRot * CFrame.new(offset)).Position
                 local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
+
+                -- 扔出惯性
+                if throwingHand == "left" and os.clock() - throwStartTime < throwDuration then
+                    local t = os.clock() - throwStartTime
+                    local force = (1 - t / throwDuration) * 0.6 * scale
+                    basePos = basePos + cam.CFrame.LookVector * force
+                end
 
                 -- 打招呼
                 if os.clock() - waveStartTime < waveDuration then
                     local t = os.clock() - waveStartTime
                     rot = rot * CFrame.Angles(math.sin(t * 12) * 0.6, 0, 0)
                 end
-                -- 鼓掌
                 if os.clock() - clapStartTime < clapDuration then
                     local t = os.clock() - clapStartTime
                     basePos = basePos + Vector3.new(math.sin(t * 25) * 0.15 * scale, 0, 0)
                 end
-                -- 震惊
                 if os.clock() - startleStartTime < startleDuration then
                     local t = os.clock() - startleStartTime
                     local shake = math.sin(t * 30) * 0.08 * scale
                     basePos = basePos + Vector3.new(-0.3 * scale + shake, shake, shake)
                     rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
                 end
-                -- 防御（双手交叉）
                 if os.clock() - blockStartTime < blockDuration then
-                    local t = os.clock() - blockStartTime
-                    local progress = math.min(t / 0.2, 1)   -- 快速到位
-                    basePos = Vector3.new(-0.15 * scale, 0.2 * scale, 0.1 * scale)   -- 左手上抬交叉
+                    basePos = Vector3.new(-0.15 * scale, 0.2 * scale, 0.1 * scale)
                     rot = CFrame.Angles(0, math.rad(30), math.rad(-20))
                 end
-                -- 挥拳仅右手，左手不处理
                 return CFrame.new(basePos) * rot
             elseif uc == Enum.UserCFrame.RightHand then
                 local offset = Vector3.new(S.spread, S.height, -S.rightReach) * scale
@@ -167,35 +166,34 @@ task.spawn(function()
                 local basePos = (headRot * CFrame.new(offset)).Position
                 local rot = CFrame.Angles(math.rad(rightAngleX), math.rad(rightAngleY), math.rad(rightAngleZ))
 
-                -- 鼓掌
+                if throwingHand == "right" and os.clock() - throwStartTime < throwDuration then
+                    local t = os.clock() - throwStartTime
+                    local force = (1 - t / throwDuration) * 0.6 * scale
+                    basePos = basePos + cam.CFrame.LookVector * force
+                end
+
                 if os.clock() - clapStartTime < clapDuration then
                     local t = os.clock() - clapStartTime
                     basePos = basePos + Vector3.new(-math.sin(t * 25) * 0.15 * scale, 0, 0)
                 end
-                -- 震惊
                 if os.clock() - startleStartTime < startleDuration then
                     local t = os.clock() - startleStartTime
                     local shake = math.sin(t * 30) * 0.08 * scale
                     basePos = basePos + Vector3.new(0.3 * scale + shake, shake, -shake)
                     rot = rot * CFrame.Angles(math.sin(t * 40) * 0.2, 0, 0)
                 end
-                -- 展示肌肉
                 if os.clock() - flexStartTime < flexDuration then
                     local t = os.clock() - flexStartTime
                     local flex = math.min(t / 0.3, 1)
                     basePos = basePos + Vector3.new(0, 0.4 * flex * scale, 0.3 * flex * scale)
                     rot = rot * CFrame.Angles(math.rad(-90 * flex), 0, math.rad(-20 * flex))
                 end
-                -- 右手挥拳
                 if os.clock() - punchStartTime < punchDuration then
                     local t = os.clock() - punchStartTime
                     local forward = math.sin(t * 12) * 0.6 * scale
                     basePos = basePos + Vector3.new(0, 0, -forward)
                 end
-                -- 防御（右手交叉）
                 if os.clock() - blockStartTime < blockDuration then
-                    local t = os.clock() - blockStartTime
-                    local progress = math.min(t / 0.2, 1)
                     basePos = Vector3.new(0.15 * scale, 0.2 * scale, 0.1 * scale)
                     rot = CFrame.Angles(0, math.rad(-30), math.rad(20))
                 end
@@ -206,6 +204,7 @@ task.spawn(function()
     else
         warn("[NoVR] failed to intercept VRUtils")
     end
+
     local vrm, Input
     for _ = 1, 250 do
         for _, o in pairs(getgc(true)) do
@@ -285,6 +284,20 @@ task.spawn(function()
     end
     setLook(true)
 
+    -- 扔出辅助函数
+    local function doThrow()
+        if Input.rFist == 1 then
+            throwingHand = "right"
+            Input.rFist = 0; Input.rIndex = 0
+        elseif Input.lFist == 1 then
+            throwingHand = "left"
+            Input.lFist = 0; Input.lIndex = 0
+        else
+            return  -- 没有抓取，不执行
+        end
+        throwStartTime = os.clock()
+    end
+
     UIS.InputBegan:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.Keyboard then
             keys[io.KeyCode] = true
@@ -302,6 +315,7 @@ task.spawn(function()
             if io.KeyCode == Enum.KeyCode.K then flexStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.Z then punchStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.X then blockStartTime = os.clock() end
+            if io.KeyCode == Enum.KeyCode.T then doThrow() end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -399,7 +413,7 @@ task.spawn(function()
         local lbl = Instance.new("TextLabel", gui)
         lbl.AnchorPoint = Vector2.new(1, 0)
         lbl.Position = UDim2.new(1, -10, 0, 10)
-        lbl.Size = UDim2.new(0, 400, 0, 300)
+        lbl.Size = UDim2.new(0, 400, 0, 320)
         lbl.BackgroundColor3 = Color3.fromRGB(0,0,0); lbl.BackgroundTransparency = 0.45
         lbl.TextColor3 = Color3.fromRGB(255,255,255)
         lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Top
@@ -413,8 +427,8 @@ task.spawn(function()
             .."Wheel - reach (Shift=right, Ctrl=left)\n"
             .."LReach: %.2f | RReach: %.2f (max 10)\n"
             .."HeadRot: X%.0f Y%.0f Z%.0f\n"
-            .."H-clap J-startle K-flex Z-punch X-block\n"
-            .."👋wave 👏clap 😱startle 💪flex 👊punch 🛡️block\n"
+            .."H-clap J-startle K-flex Z-punch X-block T-throw\n"
+            .."👋wave 👏clap 😱startle 💪flex 🤾throw 👊punch 🛡️block\n"
             .."+/- body size: %.1f/100\n"
             .."[/] grab radius: %.1fx\n"
             ..";/' move speed: %.1fx\n"
@@ -737,7 +751,7 @@ task.spawn(function()
             createHorizontalSlider(mobileGui, "RightYAngle", 0.88, 0.51, -360, 360, 0, function(val) rightAngleY = val end)
             createHorizontalSlider(mobileGui, "RightZAngle", 0.88, 0.45, -360, 360, 0, function(val) rightAngleZ = val end)
 
-            -- 绕头旋转滑块（放置在右侧下方）
+            -- 绕头旋转滑块
             createHorizontalSlider(mobileGui, "HeadRotX", 0.88, 0.66, -360, 360, 0, function(val) headRotX = val end)
             createHorizontalSlider(mobileGui, "HeadRotY", 0.88, 0.72, -360, 360, 0, function(val) headRotY = val end)
             createHorizontalSlider(mobileGui, "HeadRotZ", 0.88, 0.78, -360, 360, 0, function(val) headRotZ = val end)
@@ -767,7 +781,13 @@ task.spawn(function()
             flexBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then flexStartTime = os.clock() end end)
             bindPress(flexBtn)
 
-            -- 右侧新按钮：挥拳、防御（放在垂直滑块上方）
+            -- 扔出按钮（在 flexBtn 上方）
+            local throwBtn = createBtn(mobileGui, "ThrowBtn", UDim2.fromScale(0.12, 0.24), UDim2.fromScale(0.1, 0.05), "🤾", 20)
+            throwBtn.AnchorPoint = Vector2.new(0.5, 1)
+            throwBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then doThrow() end end)
+            bindPress(throwBtn)
+
+            -- 右侧按钮
             local punchBtn = createBtn(mobileGui, "PunchBtn", UDim2.fromScale(0.88, 0.35), UDim2.fromScale(0.1, 0.05), "👊", 20)
             punchBtn.AnchorPoint = Vector2.new(0.5, 1)
             punchBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then punchStartTime = os.clock() end end)
@@ -778,7 +798,7 @@ task.spawn(function()
             blockBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then blockStartTime = os.clock() end end)
             bindPress(blockBtn)
 
-            -- 触摸事件处理（保持不变）
+            -- 触摸事件处理
             local function findSliderAt(pos)
                 for _, slider in ipairs(sliders) do
                     local track = slider.track
@@ -834,7 +854,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, punchBtn, blockBtn}
+                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
                 for _, btn in ipairs(allBtns) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
