@@ -119,7 +119,44 @@ task.spawn(function()
     local blockStartTime, blockDuration = 0, 2.0
     local throwStartTime, throwDuration = 0, 0.4
     local throwingHand = nil
-    local throwReleasePending = nil   -- 标记需要在下一帧释放抓取
+    local throwReleasePending = nil
+
+    -- ===== 甩人模式状态（新增） =====
+    local shakeMode = false
+    local shakeTargetList = {}
+    local shakeIndex = 0
+    local shakeTargetStart = 0
+    local SHAKE_DURATION = 0.5
+    local SHAKE_AMP = 4.5
+
+    local function getShakeTargets()
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                table.insert(list, p)
+            end
+        end
+        return list
+    end
+    local function startShakeMode()
+        local list = getShakeTargets()
+        if #list == 0 then
+            warn("[NoVR] 甩人: 没有其他玩家")
+            return
+        end
+        shakeTargetList = list
+        shakeIndex = 1
+        shakeTargetStart = os.clock()
+        shakeMode = true
+        print(("[NoVR] 甩人开始，目标 %d 人"):format(#list))
+    end
+    local function stopShakeMode()
+        shakeMode = false
+        shakeTargetList = {}
+        shakeIndex = 0
+        print("[NoVR] 甩人停止")
+    end
+    -- ================================
 
     local ok, VRUtils = pcall(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
@@ -136,12 +173,39 @@ task.spawn(function()
             end
 
             if uc == Enum.UserCFrame.LeftHand then
+                -- ===== 甩人模式：左手瞬移到目标玩家头顶并疯狂抖动旋转 =====
+                if shakeMode and #shakeTargetList > 0 then
+                    local target = shakeTargetList[math.clamp(shakeIndex, 1, #shakeTargetList)]
+                    if target and target.Character then
+                        local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            local targetPos = hrp.Position + Vector3.new(0, 1.5, 0)
+                            local localOffset = cam.CFrame:PointToObjectSpace(targetPos)
+                            local t = now
+                            local amp = SHAKE_AMP
+                            local shake = Vector3.new(
+                                math.sin(t * 350) * amp,
+                                math.cos(t * 320) * amp,
+                                math.sin(t * 380 + 1.2) * amp
+                            )
+                            local spin = CFrame.Angles(t * 80, t * 95, t * 70)
+                            -- 疯狂甩：额外一圈急速扰动
+                            local whirl = CFrame.Angles(
+                                math.sin(t * 200) * 1.6,
+                                math.cos(t * 210) * 1.6,
+                                math.sin(t * 230) * 1.6
+                            )
+                            return CFrame.new(localOffset + shake) * whirl * spin
+                        end
+                    end
+                end
+                -- ==============================================
+
                 local offset = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
                 local headRot = CFrame.Angles(math.rad(headRotX), math.rad(headRotY), math.rad(headRotZ))
                 local basePos = (headRot * CFrame.new(offset)).Position
                 local rot = CFrame.Angles(math.rad(leftAngleX), math.rad(leftAngleY), math.rad(leftAngleZ))
 
-                -- 投掷动画
                 if throwingHand == "left" then
                     local t = now - throwStartTime
                     local maxOffset = 0.8 * scale
@@ -152,7 +216,6 @@ task.spawn(function()
                         force = (1 - (t - throwDuration / 2) / (throwDuration / 2)) * maxOffset
                     end
                     basePos = basePos + cam.CFrame.LookVector * force
-                    -- 延迟释放抓取
                     if throwReleasePending == "left" and t > 0.02 then
                         if Input then
                             Input.lFist = 0; Input.lIndex = 0
@@ -161,7 +224,6 @@ task.spawn(function()
                     end
                 end
 
-                -- 其他动画（打招呼等）
                 if now - waveStartTime < waveDuration then
                     local t = now - waveStartTime
                     rot = rot * CFrame.Angles(math.sin(t * 12) * 0.6, 0, 0)
@@ -317,18 +379,39 @@ task.spawn(function()
     end
     setLook(true)
 
-    -- 投掷辅助函数
     local function doThrow()
         if Input.rFist == 1 then
             throwingHand = "right"
             throwStartTime = os.clock()
-            throwReleasePending = "right"   -- 延迟释放
+            throwReleasePending = "right"
         elseif Input.lFist == 1 then
             throwingHand = "left"
             throwStartTime = os.clock()
             throwReleasePending = "left"
         end
     end
+
+    -- ===== 甩人模式的目标切换线程（新增） =====
+    task.spawn(function()
+        while true do
+            task.wait(0.05)
+            if shakeMode and #shakeTargetList > 0 then
+                if os.clock() - shakeTargetStart >= SHAKE_DURATION then
+                    shakeIndex = shakeIndex + 1
+                    if shakeIndex > #shakeTargetList then
+                        shakeTargetList = getShakeTargets()
+                        shakeIndex = 1
+                        if #shakeTargetList == 0 then
+                            shakeMode = false
+                            break
+                        end
+                    end
+                    shakeTargetStart = os.clock()
+                end
+            end
+        end
+    end)
+    -- ======================================
 
     UIS.InputBegan:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.Keyboard then
@@ -341,13 +424,17 @@ task.spawn(function()
             if io.KeyCode == Enum.KeyCode.Semicolon then S.speedMult = math.clamp(S.speedMult - 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.Quote then S.speedMult = math.clamp(S.speedMult + 0.1, 0.1, 10) end
             if io.KeyCode == Enum.KeyCode.G then S.toggleGrabMode = not S.toggleGrabMode end
-            -- 动作快捷键
             if io.KeyCode == Enum.KeyCode.H then clapStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.J then startleStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.K then flexStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.Z then punchStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.X then blockStartTime = os.clock() end
             if io.KeyCode == Enum.KeyCode.T then doThrow() end
+            -- ===== 甩人快捷键 Y（新增） =====
+            if io.KeyCode == Enum.KeyCode.Y then
+                if shakeMode then stopShakeMode() else startShakeMode() end
+            end
+            -- ============================
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -445,7 +532,7 @@ task.spawn(function()
         local lbl = Instance.new("TextLabel", gui)
         lbl.AnchorPoint = Vector2.new(1, 0)
         lbl.Position = UDim2.new(1, -10, 0, 10)
-        lbl.Size = UDim2.new(0, 400, 0, 320)
+        lbl.Size = UDim2.new(0, 400, 0, 340)
         lbl.BackgroundColor3 = Color3.fromRGB(0,0,0); lbl.BackgroundTransparency = 0.45
         lbl.TextColor3 = Color3.fromRGB(255,255,255)
         lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextYAlignment = Enum.TextYAlignment.Top
@@ -460,13 +547,16 @@ task.spawn(function()
             .."LReach: %.2f | RReach: %.2f (max 10)\n"
             .."HeadRot: X%.0f Y%.0f Z%.0f\n"
             .."H-clap J-startle K-flex Z-punch X-block T-throw\n"
+            .."Y - 甩人模式: %s\n"
             .."👋wave 👏clap 😱startle 💪flex 🤾throw 👊punch 🛡️block\n"
             .."+/- body size: %.1f/100\n"
             .."[/] grab radius: %.1fx\n"
             ..";/' move speed: %.1fx\n"
             .."G - grab mode: %s\n"
             .."LeftAlt - free the cursor")
-            :format(S.leftReach, S.rightReach, headRotX, headRotY, headRotZ, S.scale, S.grabRadiusMult, S.speedMult, S.toggleGrabMode and "Toggle" or "Hold")
+            :format(S.leftReach, S.rightReach, headRotX, headRotY, headRotZ,
+                shakeMode and ("ON -> "..tostring(shakeTargetList[shakeIndex] and shakeTargetList[shakeIndex].Name or "-")) or "OFF",
+                S.scale, S.grabRadiusMult, S.speedMult, S.toggleGrabMode and "Toggle" or "Hold")
         end)
     end)
 
@@ -506,7 +596,6 @@ task.spawn(function()
                 end)
             end
 
-            -- 方向键
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -632,7 +721,7 @@ task.spawn(function()
             func.AnchorPoint = Vector2.new(1, 0)
             func.BackgroundTransparency = 1
             func.Parent = mobileGui
-            
+
             local scaleUp = createBtn(func, "ScaleUp", UDim2.fromScale(0, 0), UDim2.fromScale(0.48, 0.14), "变大", 11)
             local scaleDown = createBtn(func, "ScaleDown", UDim2.fromScale(1, 0), UDim2.fromScale(0.48, 0.14), "变小", 11)
             scaleDown.AnchorPoint = Vector2.new(1, 0)
@@ -660,7 +749,7 @@ task.spawn(function()
             end)
             bindPress(grabUp)
             bindPress(grabDown)
-            
+
             local speedUp = createBtn(func, "SpeedUp", UDim2.fromScale(0, 0.48), UDim2.fromScale(0.48, 0.14), "速度+", 11)
             local speedDown = createBtn(func, "SpeedDown", UDim2.fromScale(1, 0.48), UDim2.fromScale(0.48, 0.14), "速度-", 11)
             speedDown.AnchorPoint = Vector2.new(1, 0)
@@ -676,7 +765,7 @@ task.spawn(function()
             end)
             bindPress(speedUp)
             bindPress(speedDown)
-            
+
             local toggleGrab = createBtn(func, "ToggleGrab", UDim2.fromScale(0.5, 0.68), UDim2.fromScale(0.96, 0.14), "模式:长按", 11)
             toggleGrab.AnchorPoint = Vector2.new(0.5, 0)
             toggleGrab.InputBegan:Connect(function(i)
@@ -686,7 +775,7 @@ task.spawn(function()
                 end
             end)
             bindPress(toggleGrab)
-            
+
             local toggleLook = createBtn(func, "ToggleLook", UDim2.fromScale(0.5, 0.86), UDim2.fromScale(0.96, 0.14), "解锁视角", 11)
             toggleLook.AnchorPoint = Vector2.new(0.5, 0)
             toggleLook.InputBegan:Connect(function(i)
@@ -696,6 +785,29 @@ task.spawn(function()
                 end
             end)
             bindPress(toggleLook)
+
+            -- ===== 甩人按钮（新增） =====
+            local shakeBtn = createBtn(mobileGui, "ShakeBtn", UDim2.fromScale(0.5, 0.06), UDim2.fromScale(0.18, 0.06), "甩人", 16)
+            shakeBtn.AnchorPoint = Vector2.new(0.5, 0)
+            shakeBtn.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+            shakeBtn.BackgroundTransparency = 0.35
+            shakeBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    if shakeMode then
+                        stopShakeMode()
+                        shakeBtn.Text = "甩人"
+                        shakeBtn.BackgroundColor3 = Color3.fromRGB(120, 0, 0)
+                    else
+                        startShakeMode()
+                        if shakeMode then
+                            shakeBtn.Text = "停止"
+                            shakeBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 0)
+                        end
+                    end
+                end
+            end)
+            bindPress(shakeBtn)
+            -- ===========================
 
             -- ========== 滑块系统 ==========
             local sliders = {}
@@ -723,13 +835,7 @@ task.spawn(function()
                 Instance.new("UICorner", thumb).CornerRadius = UDim.new(0, 4)
                 thumb.Parent = track
 
-                local slider = {
-                    track = track,
-                    thumb = thumb,
-                    min = minVal,
-                    max = maxVal,
-                    update = updateFunc,
-                }
+                local slider = { track = track, thumb = thumb, min = minVal, max = maxVal, update = updateFunc }
                 local ratio = (initVal - minVal) / (maxVal - minVal)
                 local thumbOffset = (ratio - 0.5) * (track.AbsoluteSize.X - thumb.AbsoluteSize.X)
                 thumb.Position = UDim2.fromOffset(thumbOffset, 0) + UDim2.fromScale(0.5, 0.5)
@@ -759,13 +865,7 @@ task.spawn(function()
                 Instance.new("UICorner", thumb).CornerRadius = UDim.new(0, 4)
                 thumb.Parent = track
 
-                local slider = {
-                    track = track,
-                    thumb = thumb,
-                    min = minVal,
-                    max = maxVal,
-                    update = updateFunc,
-                }
+                local slider = { track = track, thumb = thumb, min = minVal, max = maxVal, update = updateFunc }
                 local ratio = (initVal - minVal) / (maxVal - minVal)
                 local thumbOffset = (0.5 - ratio) * (track.AbsoluteSize.Y - thumb.AbsoluteSize.Y)
                 thumb.Position = UDim2.fromOffset(0, thumbOffset) + UDim2.fromScale(0.5, 0.5)
@@ -773,26 +873,21 @@ task.spawn(function()
                 return slider
             end
 
-            -- 左手角度滑块
             createHorizontalSlider(mobileGui, "LeftXAngle", 0.12, 0.57, -360, 360, 0, function(val) leftAngleX = val end)
             createHorizontalSlider(mobileGui, "LeftYAngle", 0.12, 0.51, -360, 360, 0, function(val) leftAngleY = val end)
             createHorizontalSlider(mobileGui, "LeftZAngle", 0.12, 0.45, -360, 360, 0, function(val) leftAngleZ = val end)
 
-            -- 右手角度滑块
             createHorizontalSlider(mobileGui, "RightXAngle", 0.88, 0.57, -360, 360, 0, function(val) rightAngleX = val end)
             createHorizontalSlider(mobileGui, "RightYAngle", 0.88, 0.51, -360, 360, 0, function(val) rightAngleY = val end)
             createHorizontalSlider(mobileGui, "RightZAngle", 0.88, 0.45, -360, 360, 0, function(val) rightAngleZ = val end)
 
-            -- 绕头旋转滑块
             createHorizontalSlider(mobileGui, "HeadRotX", 0.88, 0.66, -360, 360, 0, function(val) headRotX = val end)
             createHorizontalSlider(mobileGui, "HeadRotY", 0.88, 0.72, -360, 360, 0, function(val) headRotY = val end)
             createHorizontalSlider(mobileGui, "HeadRotZ", 0.88, 0.78, -360, 360, 0, function(val) headRotZ = val end)
 
-            -- 垂直长度滑块
             createVerticalSlider(mobileGui, "LeftReach", 0.05, 0.50, 0.24, 0.05, 10, S.leftReach, function(val) S.leftReach = val end)
             createVerticalSlider(mobileGui, "RightReach", 0.95, 0.50, 0.24, 0.05, 10, S.rightReach, function(val) S.rightReach = val end)
 
-            -- 左侧动画按钮
             local waveBtn = createBtn(mobileGui, "WaveBtn", UDim2.fromScale(0.12, 0.40), UDim2.fromScale(0.1, 0.05), "👋", 20)
             waveBtn.AnchorPoint = Vector2.new(0.5, 1)
             waveBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then waveStartTime = os.clock() end end)
@@ -813,13 +908,11 @@ task.spawn(function()
             flexBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then flexStartTime = os.clock() end end)
             bindPress(flexBtn)
 
-            -- 扔出按钮（在 flexBtn 上方）
             local throwBtn = createBtn(mobileGui, "ThrowBtn", UDim2.fromScale(0.12, 0.24), UDim2.fromScale(0.1, 0.05), "🤾", 20)
             throwBtn.AnchorPoint = Vector2.new(0.5, 1)
             throwBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then doThrow() end end)
             bindPress(throwBtn)
 
-            -- 右侧按钮
             local punchBtn = createBtn(mobileGui, "PunchBtn", UDim2.fromScale(0.88, 0.35), UDim2.fromScale(0.1, 0.05), "👊", 20)
             punchBtn.AnchorPoint = Vector2.new(0.5, 1)
             punchBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then punchStartTime = os.clock() end end)
@@ -830,7 +923,6 @@ task.spawn(function()
             blockBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then blockStartTime = os.clock() end end)
             bindPress(blockBtn)
 
-            -- 触摸事件处理
             local function findSliderAt(pos)
                 for _, slider in ipairs(sliders) do
                     local track = slider.track
@@ -886,7 +978,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
+                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn}
                 for _, btn in ipairs(allBtns) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
