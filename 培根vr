@@ -145,12 +145,22 @@ task.spawn(function()
     local GYRO_MIRROR_R = -1.0
 
     -- ===== VR 眼镜控制模式 =====
-    -- 开启后：位置固定在身前，只做旋转跟随，仅控制单只手
-    local gyroVRMode = false       -- 是否开启 VR 眼镜控制模式
-    local gyroVRHand = "right"     -- 只控制哪只手: "left" / "right"
-    local GYRO_VR_ROT_K = 1.0      -- 旋转跟随倍率（1.0 = 1:1 跟手）
-    local GYRO_VR_POS_K = 0.0      -- 位置跟随倍率（0 = 位置固定，像握着控制器）
-    local GYRO_VR_POS_MAX = 0.3    -- VR 模式下位置摆动上限（当 POS_K > 0 时生效）
+    -- 开启后：位置固定在身前，只做旋转跟随；可单独控制手 / 头
+    local gyroVRMode = false        -- 是否开启 VR 眼镜控制模式
+    local gyroVRHand = "right"      -- 只控制哪只手: "left" / "right"
+    local gyroVRHandOn = true       -- 是否让手跟随手机旋转
+    local gyroVRHeadOn = true       -- 是否让头（相机）跟随手机旋转
+    local GYRO_VR_ROT_K = 1.0       -- 手旋转跟随倍率（1.0 = 1:1 跟手）
+    local GYRO_VR_POS_K = 0.0       -- 手位置跟随倍率（0 = 位置固定，像握着控制器）
+    local GYRO_VR_POS_MAX = 0.3     -- VR 模式下位置摆动上限
+
+    -- ===== VR 头部跟随参数 =====
+    local headGyroBase = nil        -- 头部模式下的陀螺仪基准
+    local headBaseYaw, headBasePitch = nil, nil
+    local GYRO_VR_HEAD_K = 1.0      -- 头部跟随倍率
+    local GYRO_VR_HEAD_MAX = 1.0    -- 基准重置阈值（超过此角度自动重定基准）
+    local GYRO_VR_HEAD_YAW_SIGN = -1 -- 左右方向符号，反向就改成 1
+    local GYRO_VR_HEAD_PITCH_SIGN = 1 -- 上下方向符号，反向就改成 -1
 
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
@@ -160,10 +170,17 @@ task.spawn(function()
         end)
     end)
 
+    local function resetVRHeadRef()
+        headGyroBase = nil
+        headBaseYaw = nil
+        headBasePitch = nil
+    end
+
     local function resetGyroRef()
         if gyroNow then gyroBase = gyroNow end
         gyroRotL = CFrame.new(); gyroRotR = CFrame.new()
         gyroPosL = Vector3.zero; gyroPosR = Vector3.zero
+        resetVRHeadRef()
     end
 
     local function getShakeTargets()
@@ -232,7 +249,7 @@ task.spawn(function()
                 end
 
                 -- VR 眼镜控制模式：左手（位置固定，只受旋转控制）
-                if gyroMode and gyroVRMode and gyroVRHand == "left" then
+                if gyroMode and gyroVRMode and gyroVRHandOn and gyroVRHand == "left" then
                     local basePos = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
                     return CFrame.new(basePos) * gyroRotL
                 end
@@ -311,7 +328,7 @@ task.spawn(function()
                 end
 
                 -- VR 眼镜控制模式：右手（位置固定，只受旋转控制）
-                if gyroMode and gyroVRMode and gyroVRHand == "right" then
+                if gyroMode and gyroVRMode and gyroVRHandOn and gyroVRHand == "right" then
                     local basePos = Vector3.new(S.spread, S.height, -S.rightReach) * scale
                     return CFrame.new(basePos) * gyroRotR
                 end
@@ -542,6 +559,18 @@ task.spawn(function()
                 resetGyroRef()
                 print("[NoVR] VR眼镜控制手切换为: " .. (gyroVRHand == "left" and "左手" or "右手"))
             end
+            -- VR 眼镜头部跟随开关
+            if io.KeyCode == Enum.KeyCode.N then
+                gyroVRHeadOn = not gyroVRHeadOn
+                resetVRHeadRef()
+                print("[NoVR] VR眼镜头部跟随: " .. (gyroVRHeadOn and "开" or "关"))
+            end
+            -- VR 眼镜手部跟随开关
+            if io.KeyCode == Enum.KeyCode.M then
+                gyroVRHandOn = not gyroVRHandOn
+                resetGyroRef()
+                print("[NoVR] VR眼镜手部跟随: " .. (gyroVRHandOn and "开" or "关"))
+            end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -606,10 +635,17 @@ task.spawn(function()
     end)
 
     RunService:BindToRenderStep("NoVR_Control", Enum.RenderPriority.Camera.Value + 1, function(dt)
+        -- 鼠标视角
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
-            yaw = yaw - d.X * S.sens
-            pitch = math.clamp(pitch - d.Y * S.sens, -1.45, 1.45)
+            if gyroMode and gyroVRMode and gyroVRHeadOn then
+                -- VR 头部模式下：鼠标改变基准朝向
+                if headBaseYaw then headBaseYaw = headBaseYaw - d.X * S.sens end
+                if headBasePitch then headBasePitch = math.clamp(headBasePitch - d.Y * S.sens, -1.45, 1.45) end
+            else
+                yaw = yaw - d.X * S.sens
+                pitch = math.clamp(pitch - d.Y * S.sens, -1.45, 1.45)
+            end
             UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
         end
 
@@ -629,7 +665,10 @@ task.spawn(function()
             local rR, pR, zR = rx, ry, rz
             if gyroVRMode then
                 -- VR 眼镜控制模式：只驱动被选中的那只手
-                if gyroVRHand == "left" then rR, pR, zR = 0, 0, 0
+                if not gyroVRHandOn then
+                    rL, pL, zL = 0, 0, 0
+                    rR, pR, zR = 0, 0, 0
+                elseif gyroVRHand == "left" then rR, pR, zR = 0, 0, 0
                 else rL, pL, zL = 0, 0, 0 end
             elseif gyroHand == "left" then rR, pR, zR = 0, 0, 0
             elseif gyroHand == "right" then rL, pL, zL = 0, 0, 0 end
@@ -648,6 +687,25 @@ task.spawn(function()
             local aP = 1 - math.exp(-GYRO_ROT_SMOOTH * dt)
             gyroPosL = gyroPosL:Lerp(targetGyroL, aP)
             gyroPosR = gyroPosR:Lerp(targetGyroR, aP)
+
+            -- ===== VR 眼镜模式：头部跟随 =====
+            if gyroVRMode and gyroVRHeadOn then
+                if not headGyroBase or not headBaseYaw then
+                    headGyroBase = gyroNow
+                    headBaseYaw = yaw
+                    headBasePitch = pitch
+                end
+                local hRel = headGyroBase:Inverse() * gyroNow
+                local hx, hy, hz = hRel:ToEulerAnglesYXZ()
+                if math.abs(hx) > GYRO_VR_HEAD_MAX or math.abs(hy) > GYRO_VR_HEAD_MAX or math.abs(hz) > GYRO_VR_HEAD_MAX then
+                    headGyroBase = gyroNow
+                    headBaseYaw = yaw
+                    headBasePitch = pitch
+                    hx, hy, hz = 0, 0, 0
+                end
+                yaw = headBaseYaw + hy * GYRO_VR_HEAD_K * GYRO_VR_HEAD_YAW_SIGN
+                pitch = math.clamp(headBasePitch + hx * GYRO_VR_HEAD_K * GYRO_VR_HEAD_PITCH_SIGN, -1.45, 1.45)
+            end
         else
             local aR = math.min(dt * 6, 1)
             gyroRotL = gyroRotL:Lerp(CFrame.new(), aR)
@@ -1077,6 +1135,34 @@ task.spawn(function()
             end)
             bindPress(gyroVRHandBtn)
 
+            local gyroVRHeadBtn = createBtn(mobileGui, "GyroVRHeadBtn", UDim2.fromScale(0.20, 0.29), UDim2.fromScale(0.18, 0.06), "眼镜头:开", 13)
+            gyroVRHeadBtn.AnchorPoint = Vector2.new(0, 0)
+            gyroVRHeadBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 0)
+            gyroVRHeadBtn.BackgroundTransparency = 0.35
+            gyroVRHeadBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    gyroVRHeadOn = not gyroVRHeadOn
+                    resetVRHeadRef()
+                    gyroVRHeadBtn.Text = gyroVRHeadOn and "眼镜头:开" or "眼镜头:关"
+                    gyroVRHeadBtn.BackgroundColor3 = gyroVRHeadOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(gyroVRHeadBtn)
+
+            local gyroVRHandToggleBtn = createBtn(mobileGui, "GyroVRHandToggleBtn", UDim2.fromScale(0.20, 0.36), UDim2.fromScale(0.18, 0.06), "眼镜手:开", 13)
+            gyroVRHandToggleBtn.AnchorPoint = Vector2.new(0, 0)
+            gyroVRHandToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 0)
+            gyroVRHandToggleBtn.BackgroundTransparency = 0.35
+            gyroVRHandToggleBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    gyroVRHandOn = not gyroVRHandOn
+                    resetGyroRef()
+                    gyroVRHandToggleBtn.Text = gyroVRHandOn and "眼镜手:开" or "眼镜手:关"
+                    gyroVRHandToggleBtn.BackgroundColor3 = gyroVRHandOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(gyroVRHandToggleBtn)
+
             -- 滑块
             local sliders = {}
             local activeSliderTouches = {}
@@ -1231,7 +1317,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn}
+                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn}
                 for _, btn in ipairs(allBtns) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
@@ -1280,8 +1366,13 @@ task.spawn(function()
                     end
                 elseif touchLook then
                     local delta = i.Position - lastTouch
-                    yaw = yaw - delta.X * touchSens
-                    pitch = math.clamp(pitch - delta.Y * touchSens, -1.45, 1.45)
+                    if gyroMode and gyroVRMode and gyroVRHeadOn then
+                        if headBaseYaw then headBaseYaw = headBaseYaw - delta.X * touchSens end
+                        if headBasePitch then headBasePitch = math.clamp(headBasePitch - delta.Y * touchSens, -1.45, 1.45) end
+                    else
+                        yaw = yaw - delta.X * touchSens
+                        pitch = math.clamp(pitch - delta.Y * touchSens, -1.45, 1.45)
+                    end
                     lastTouch = i.Position
                 end
             end)
