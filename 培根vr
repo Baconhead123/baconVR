@@ -145,7 +145,6 @@ task.spawn(function()
     local GYRO_MIRROR_R = -1.0
 
     -- ===== VR 眼镜控制模式 =====
-    -- 开启后：位置固定在身前，只做旋转跟随；可单独控制手 / 头
     local gyroVRMode = false        -- 是否开启 VR 眼镜控制模式
     local gyroVRHand = "right"      -- 只控制哪只手: "left" / "right"
     local gyroVRHandOn = true       -- 是否让手跟随手机旋转
@@ -155,12 +154,19 @@ task.spawn(function()
     local GYRO_VR_POS_MAX = 0.3     -- VR 模式下位置摆动上限
 
     -- ===== VR 头部跟随参数 =====
-    local headGyroBase = nil        -- 头部模式下的陀螺仪基准
+    local headGyroBase = nil
     local headBaseYaw, headBasePitch = nil, nil
-    local GYRO_VR_HEAD_K = 1.0      -- 头部跟随倍率
-    local GYRO_VR_HEAD_MAX = 1.0    -- 基准重置阈值（超过此角度自动重定基准）
-    local GYRO_VR_HEAD_YAW_SIGN = -1 -- 左右方向符号，反向就改成 1
-    local GYRO_VR_HEAD_PITCH_SIGN = 1 -- 上下方向符号，反向就改成 -1
+    local GYRO_VR_HEAD_K = 1.0
+    local GYRO_VR_HEAD_MAX = 1.0
+    local GYRO_VR_HEAD_YAW_SIGN = -1
+    local GYRO_VR_HEAD_PITCH_SIGN = 1
+
+    -- ===== 移动速度平滑（起停过渡） =====
+    local moveSmoothOn = false          -- 是否启用速度过渡
+    local moveVel = Vector3.zero        -- 当前平滑后的速度向量（世界方向由 rot 应用）
+    local MOVE_ACCEL = 6.0              -- 加速速率（越大越快达到最高速）
+    local MOVE_DECEL = 8.0              -- 减速速率（越大停得越快）
+    local MOVE_MIN_SPEED = 0.02         -- 低于此速度直接归零，避免残留
 
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
@@ -543,7 +549,6 @@ task.spawn(function()
                 resetGyroRef()
                 print("[NoVR] 陀螺仪已重置")
             end
-            -- VR 眼镜控制模式开关
             if io.KeyCode == Enum.KeyCode.V then
                 gyroVRMode = not gyroVRMode
                 if gyroVRMode and not gyroMode then
@@ -553,23 +558,25 @@ task.spawn(function()
                 print("[NoVR] VR眼镜控制模式: " .. (gyroVRMode and "开" or "关")
                     .. "  控制手: " .. (gyroVRHand == "left" and "左手" or "右手"))
             end
-            -- VR 眼镜控制手切换
             if io.KeyCode == Enum.KeyCode.B then
                 gyroVRHand = (gyroVRHand == "left") and "right" or "left"
                 resetGyroRef()
                 print("[NoVR] VR眼镜控制手切换为: " .. (gyroVRHand == "left" and "左手" or "右手"))
             end
-            -- VR 眼镜头部跟随开关
             if io.KeyCode == Enum.KeyCode.N then
                 gyroVRHeadOn = not gyroVRHeadOn
                 resetVRHeadRef()
                 print("[NoVR] VR眼镜头部跟随: " .. (gyroVRHeadOn and "开" or "关"))
             end
-            -- VR 眼镜手部跟随开关
             if io.KeyCode == Enum.KeyCode.M then
                 gyroVRHandOn = not gyroVRHandOn
                 resetGyroRef()
                 print("[NoVR] VR眼镜手部跟随: " .. (gyroVRHandOn and "开" or "关"))
+            end
+            -- 移动速度平滑开关
+            if io.KeyCode == Enum.KeyCode.R then
+                moveSmoothOn = not moveSmoothOn
+                print("[NoVR] 移动速度过渡: " .. (moveSmoothOn and "开" or "关"))
             end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
@@ -639,7 +646,6 @@ task.spawn(function()
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
             if gyroMode and gyroVRMode and gyroVRHeadOn then
-                -- VR 头部模式下：鼠标改变基准朝向
                 if headBaseYaw then headBaseYaw = headBaseYaw - d.X * S.sens end
                 if headBasePitch then headBasePitch = math.clamp(headBasePitch - d.Y * S.sens, -1.45, 1.45) end
             else
@@ -717,6 +723,8 @@ task.spawn(function()
         local rot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
         local hs = cam.HeadScale; if hs <= 1 then hs = S.scale * 6 end
         local spd = (10 + S.scale * 4) * hs * S.moveK * S.speedMult
+
+        -- ===== 移动输入（含速度过渡） =====
         local mv = Vector3.zero
         if keys[Enum.KeyCode.W] then mv += Vector3.new(0,0,-1) end
         if keys[Enum.KeyCode.S] then mv += Vector3.new(0,0, 1) end
@@ -724,7 +732,27 @@ task.spawn(function()
         if keys[Enum.KeyCode.D] then mv += Vector3.new( 1,0,0) end
         if keys[Enum.KeyCode.Space] then mv += Vector3.new(0, 1,0) end
         if keys[Enum.KeyCode.LeftShift] then mv += Vector3.new(0,-1,0) end
-        if mv.Magnitude > 0 then camPos = camPos + (rot * mv.Unit) * spd * dt end
+        if mv.Magnitude > 0 then mv = mv.Unit end
+
+        local targetVel = mv * spd
+        if moveSmoothOn then
+            -- 有输入走加速，无输入走减速
+            local isAccel = mv.Magnitude > 0.01
+            local rate = isAccel and MOVE_ACCEL or MOVE_DECEL
+            local a = 1 - math.exp(-rate * dt)
+            moveVel = moveVel:Lerp(targetVel, a)
+            -- 速度足够小且无输入时直接归零，避免残留微动
+            if not isAccel and moveVel.Magnitude < MOVE_MIN_SPEED then
+                moveVel = Vector3.zero
+            end
+        else
+            moveVel = targetVel
+        end
+
+        if moveVel.Magnitude > 0 then
+            camPos = camPos + (rot * moveVel) * dt
+        end
+
         cam.CameraType = Enum.CameraType.Scriptable
         cam.CFrame = CFrame.new(camPos) * rot
         if Input then
@@ -1163,6 +1191,20 @@ task.spawn(function()
             end)
             bindPress(gyroVRHandToggleBtn)
 
+            -- ===== 移动速度过渡按钮 =====
+            local moveSmoothBtn = createBtn(mobileGui, "MoveSmoothBtn", UDim2.fromScale(0.20, 0.43), UDim2.fromScale(0.18, 0.06), "平滑:关", 13)
+            moveSmoothBtn.AnchorPoint = Vector2.new(0, 0)
+            moveSmoothBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            moveSmoothBtn.BackgroundTransparency = 0.35
+            moveSmoothBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    moveSmoothOn = not moveSmoothOn
+                    moveSmoothBtn.Text = moveSmoothOn and "平滑:开" or "平滑:关"
+                    moveSmoothBtn.BackgroundColor3 = moveSmoothOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(moveSmoothBtn)
+
             -- 滑块
             local sliders = {}
             local activeSliderTouches = {}
@@ -1317,7 +1359,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn}
+                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn}
                 for _, btn in ipairs(allBtns) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
