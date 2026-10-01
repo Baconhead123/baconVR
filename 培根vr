@@ -105,7 +105,6 @@ task.spawn(function()
         toggleGrabMode = false,
         speedMult = 1,
     }
-    -- 记录初始手部位置参数（用于重置）
     local HAND_DEFAULTS = {
         leftReach = S.leftReach,
         rightReach = S.rightReach,
@@ -136,7 +135,7 @@ task.spawn(function()
     local SHAKE_AMP = 6.5
     local shakeBothHands = true
 
-    -- ===== 陀螺仪状态（仿参考实现） =====
+    -- ===== 陀螺仪状态 =====
     local gyroMode = false
     local gyroHand = "both"
     local gyroNow, gyroBase = nil, nil
@@ -168,12 +167,25 @@ task.spawn(function()
     local GYRO_VR_HEAD_YAW_SIGN = -1
     local GYRO_VR_HEAD_PITCH_SIGN = 1
 
-    -- ===== 移动速度平滑（起停过渡） =====
+    -- ===== 移动速度平滑 =====
     local moveSmoothOn = false
     local moveVel = Vector3.zero
     local MOVE_ACCEL = 6.0
     local MOVE_DECEL = 8.0
     local MOVE_MIN_SPEED = 0.02
+
+    -- ===== 视角灵敏度 & 平滑 =====
+    local LOOK_SENS_K = 1.0
+    local LOOK_SENS_MIN = 0.1
+    local LOOK_SENS_MAX = 5.0
+    local LOOK_SENS_STEP = 0.1
+    local lookSmoothOn = false
+    local lookSmoothRate = 20
+    local lookSmoothTarget = Vector2.zero
+
+    -- ===== UI 隐藏 =====
+    local uiHidden = false
+    local setUIHiddenFn = nil  -- 稍后在移动端作用域内赋值
 
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
@@ -196,7 +208,6 @@ task.spawn(function()
         resetVRHeadRef()
     end
 
-    -- ===== 手部位置重置（回到初始位置） =====
     local function resetHandPositions()
         S.leftReach = HAND_DEFAULTS.leftReach
         S.rightReach = HAND_DEFAULTS.rightReach
@@ -496,6 +507,27 @@ task.spawn(function()
     end
     setLook(true)
 
+    -- 视角增量应用（带平滑开关时，累加至 lookSmoothTarget，由渲染循环渐进应用）
+    local function applyLookDelta(dx, dy)
+        local sx = dx * S.sens * LOOK_SENS_K
+        local sy = dy * S.sens * LOOK_SENS_K
+        if gyroMode and gyroVRMode and gyroVRHeadOn then
+            if headBaseYaw then headBaseYaw = headBaseYaw - sx end
+            if headBasePitch then headBasePitch = math.clamp(headBasePitch - sy, -1.45, 1.45) end
+        else
+            yaw = yaw - sx
+            pitch = math.clamp(pitch - sy, -1.45, 1.45)
+        end
+    end
+
+    local function addLookInput(dx, dy)
+        if lookSmoothOn then
+            lookSmoothTarget = lookSmoothTarget + Vector2.new(dx, dy)
+        else
+            applyLookDelta(dx, dy)
+        end
+    end
+
     local function doThrow()
         if Input.rFist == 1 then
             throwingHand = "right"
@@ -594,9 +626,28 @@ task.spawn(function()
                 moveSmoothOn = not moveSmoothOn
                 print("[NoVR] 移动速度过渡: " .. (moveSmoothOn and "开" or "关"))
             end
-            -- 手部位置重置到初始位置
             if io.KeyCode == Enum.KeyCode.Comma then
                 resetHandPositions()
+            end
+            -- 视角灵敏度 / 平滑 / UI 隐藏（快捷键）
+            if io.KeyCode == Enum.KeyCode.One then
+                LOOK_SENS_K = math.clamp(LOOK_SENS_K - LOOK_SENS_STEP, LOOK_SENS_MIN, LOOK_SENS_MAX)
+                print(("[NoVR] 视角灵敏度: %.2fx"):format(LOOK_SENS_K))
+            end
+            if io.KeyCode == Enum.KeyCode.Two then
+                LOOK_SENS_K = math.clamp(LOOK_SENS_K + LOOK_SENS_STEP, LOOK_SENS_MIN, LOOK_SENS_MAX)
+                print(("[NoVR] 视角灵敏度: %.2fx"):format(LOOK_SENS_K))
+            end
+            if io.KeyCode == Enum.KeyCode.Three then
+                lookSmoothOn = not lookSmoothOn
+                if not lookSmoothOn then lookSmoothTarget = Vector2.zero end
+                print("[NoVR] 视角平滑: " .. (lookSmoothOn and "开" or "关"))
+            end
+            if io.KeyCode == Enum.KeyCode.Four then
+                if setUIHiddenFn then
+                    uiHidden = not uiHidden
+                    setUIHiddenFn(uiHidden)
+                end
             end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
@@ -662,18 +713,27 @@ task.spawn(function()
     end)
 
     RunService:BindToRenderStep("NoVR_Control", Enum.RenderPriority.Camera.Value + 1, function(dt)
+        -- 鼠标视角输入
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
-            if gyroMode and gyroVRMode and gyroVRHeadOn then
-                if headBaseYaw then headBaseYaw = headBaseYaw - d.X * S.sens end
-                if headBasePitch then headBasePitch = math.clamp(headBasePitch - d.Y * S.sens, -1.45, 1.45) end
+            if lookSmoothOn then
+                lookSmoothTarget = lookSmoothTarget + d
             else
-                yaw = yaw - d.X * S.sens
-                pitch = math.clamp(pitch - d.Y * S.sens, -1.45, 1.45)
+                applyLookDelta(d.X, d.Y)
             end
             UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
         end
 
+        -- 视角平滑：渐进应用待处理的输入
+        if lookSmoothOn and lookSmoothTarget.Magnitude > 0.001 then
+            local a = 1 - math.exp(-lookSmoothRate * dt)
+            local step = lookSmoothTarget * a
+            lookSmoothTarget = lookSmoothTarget * (1 - a)
+            if lookSmoothTarget.Magnitude < 0.05 then lookSmoothTarget = Vector2.zero end
+            applyLookDelta(step.X, step.Y)
+        end
+
+        -- ===== 陀螺仪（仿参考实现） =====
         if gyroMode and gyroNow then
             if not gyroBase then gyroBase = gyroNow end
             local rel = gyroBase:Inverse() * gyroNow
@@ -785,6 +845,9 @@ task.spawn(function()
             mobileGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
             mobileGui.Parent = lp:WaitForChild("PlayerGui")
 
+            -- 需要隐藏/显示的 UI 元素列表
+            local hideList = {}
+
             local function createBtn(parent, name, pos, size, text, textSize)
                 textSize = textSize or 14
                 local btn = Instance.new("TextButton")
@@ -810,7 +873,21 @@ task.spawn(function()
                     if i.UserInputType == Enum.UserInputType.Touch then btn.BackgroundTransparency = 0.5 end
                 end)
             end
+            local function regHide(el)
+                table.insert(hideList, el)
+            end
 
+            -- 应用隐藏/显示
+            local function setUIHidden(hidden)
+                for _, el in ipairs(hideList) do
+                    if el and el.Parent then
+                        el.Visible = not hidden
+                    end
+                end
+            end
+            setUIHiddenFn = setUIHidden
+
+            -- ===== 保留可见：移动方向键 =====
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -839,6 +916,7 @@ task.spawn(function()
             bindKey(left, Enum.KeyCode.A)
             bindKey(right, Enum.KeyCode.D)
 
+            -- ===== 保留可见：上下移动 =====
             local vert = Instance.new("Frame")
             vert.Size = UDim2.fromScale(0.09, 0.15)
             vert.Position = UDim2.fromScale(0.03, 0.78)
@@ -851,6 +929,7 @@ task.spawn(function()
             bindKey(ascend, Enum.KeyCode.Space)
             bindKey(descend, Enum.KeyCode.LeftShift)
 
+            -- ===== 保留可见：抓取 & 指向 =====
             local grab = Instance.new("Frame")
             grab.Size = UDim2.fromScale(0.3, 0.18)
             grab.Position = UDim2.fromScale(0.97, 0.97)
@@ -860,8 +939,8 @@ task.spawn(function()
             local grabL = createBtn(grab, "GrabL", UDim2.fromScale(0, 0), UDim2.fromScale(0.45, 0.45), "左抓", 14)
             local grabR = createBtn(grab, "GrabR", UDim2.fromScale(1, 0), UDim2.fromScale(0.45, 0.45), "右抓", 14)
             grabR.AnchorPoint = Vector2.new(1, 0)
-            local pinchL = createBtn(grab, "PinchL", UDim2.fromScale(0, 1), UDim2.fromScale(0.45, 0.45), "左捏", 13)
-            local pinchR = createBtn(grab, "PinchR", UDim2.fromScale(1, 1), UDim2.fromScale(0.45, 0.45), "右捏", 13)
+            local pinchL = createBtn(grab, "PinchL", UDim2.fromScale(0, 1), UDim2.fromScale(0.45, 0.45), "左指", 13)
+            local pinchR = createBtn(grab, "PinchR", UDim2.fromScale(1, 1), UDim2.fromScale(0.45, 0.45), "右指", 13)
             pinchL.AnchorPoint = Vector2.new(0, 1)
             pinchR.AnchorPoint = Vector2.new(1, 1)
 
@@ -930,12 +1009,29 @@ task.spawn(function()
             end)
             bindPress(pinchR)
 
+            -- ===== UI 隐藏/显示按钮（右上角，保持可见） =====
+            local hideToggleBtn = createBtn(mobileGui, "HideToggleBtn", UDim2.fromScale(0.97, 0.03), UDim2.fromScale(0.16, 0.05), "隐藏UI", 13)
+            hideToggleBtn.AnchorPoint = Vector2.new(1, 0)
+            hideToggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+            hideToggleBtn.BackgroundTransparency = 0.35
+            hideToggleBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    uiHidden = not uiHidden
+                    setUIHidden(uiHidden)
+                    hideToggleBtn.Text = uiHidden and "显示UI" or "隐藏UI"
+                end
+            end)
+            bindPress(hideToggleBtn)
+
+            -- ===== 以下所有元素都会被隐藏 =====
+
             local func = Instance.new("Frame")
             func.Size = UDim2.fromScale(0.28, 0.42)
             func.Position = UDim2.fromScale(0.97, 0.12)
             func.AnchorPoint = Vector2.new(1, 0)
             func.BackgroundTransparency = 1
             func.Parent = mobileGui
+            regHide(func)
 
             local scaleUp = createBtn(func, "ScaleUp", UDim2.fromScale(0, 0), UDim2.fromScale(0.48, 0.14), "变大", 11)
             local scaleDown = createBtn(func, "ScaleDown", UDim2.fromScale(1, 0), UDim2.fromScale(0.48, 0.14), "变小", 11)
@@ -1022,6 +1118,7 @@ task.spawn(function()
                 end
             end)
             bindPress(shakeBtn)
+            regHide(shakeBtn)
 
             local handBtn = createBtn(mobileGui, "HandBtn", UDim2.fromScale(0.25, 0.06), UDim2.fromScale(0.15, 0.06), "双手", 14)
             handBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1035,6 +1132,7 @@ task.spawn(function()
                 end
             end)
             bindPress(handBtn)
+            regHide(handBtn)
 
             local timeBox = Instance.new("Frame")
             timeBox.Name = "ShakeTimeBox"
@@ -1042,6 +1140,7 @@ task.spawn(function()
             timeBox.Size = UDim2.fromScale(0.19, 0.06)
             timeBox.BackgroundTransparency = 1
             timeBox.Parent = mobileGui
+            regHide(timeBox)
 
             local timeMinus = createBtn(timeBox, "TimeMinus", UDim2.fromScale(0, 0), UDim2.fromScale(0.28, 1), "−", 16)
             timeMinus.AnchorPoint = Vector2.new(0, 0)
@@ -1088,6 +1187,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroBtn)
+            regHide(gyroBtn)
 
             local gyroHandBtn = createBtn(mobileGui, "GyroHandBtn", UDim2.fromScale(0.02, 0.22), UDim2.fromScale(0.17, 0.06), "陀螺:双手", 13)
             gyroHandBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1102,6 +1202,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroHandBtn)
+            regHide(gyroHandBtn)
 
             local gyroResetBtn = createBtn(mobileGui, "GyroResetBtn", UDim2.fromScale(0.02, 0.29), UDim2.fromScale(0.17, 0.06), "陀螺:重置", 13)
             gyroResetBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1115,6 +1216,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroResetBtn)
+            regHide(gyroResetBtn)
 
             local gyroSensBtn = createBtn(mobileGui, "GyroSensBtn", UDim2.fromScale(0.02, 0.36), UDim2.fromScale(0.17, 0.06), ("灵敏 %.2f"):format(GYRO_ROT_K), 13)
             gyroSensBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1128,6 +1230,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroSensBtn)
+            regHide(gyroSensBtn)
 
             local gyroRadiusBtn = createBtn(mobileGui, "GyroRadiusBtn", UDim2.fromScale(0.02, 0.43), UDim2.fromScale(0.17, 0.06), ("幅度 %.2f"):format(GYRO_POS_K), 13)
             gyroRadiusBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1142,8 +1245,49 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroRadiusBtn)
+            regHide(gyroRadiusBtn)
 
-            -- ===== VR 眼镜控制模式按钮 =====
+            -- ===== 视角灵敏度按钮 =====
+            local sensDownBtn = createBtn(mobileGui, "SensDownBtn", UDim2.fromScale(0.02, 0.50), UDim2.fromScale(0.08, 0.06), "灵-", 13)
+            sensDownBtn.AnchorPoint = Vector2.new(0, 0)
+            sensDownBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 120)
+            sensDownBtn.BackgroundTransparency = 0.35
+            sensDownBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    LOOK_SENS_K = math.clamp(LOOK_SENS_K - LOOK_SENS_STEP, LOOK_SENS_MIN, LOOK_SENS_MAX)
+                end
+            end)
+            bindPress(sensDownBtn)
+            regHide(sensDownBtn)
+
+            local sensUpBtn = createBtn(mobileGui, "SensUpBtn", UDim2.fromScale(0.11, 0.50), UDim2.fromScale(0.08, 0.06), "灵+", 13)
+            sensUpBtn.AnchorPoint = Vector2.new(0, 0)
+            sensUpBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 120)
+            sensUpBtn.BackgroundTransparency = 0.35
+            sensUpBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    LOOK_SENS_K = math.clamp(LOOK_SENS_K + LOOK_SENS_STEP, LOOK_SENS_MIN, LOOK_SENS_MAX)
+                end
+            end)
+            bindPress(sensUpBtn)
+            regHide(sensUpBtn)
+
+            local sensLabel = createBtn(mobileGui, "SensLabel", UDim2.fromScale(0.02, 0.57), UDim2.fromScale(0.17, 0.06), ("灵敏度 %.2fx"):format(LOOK_SENS_K), 12)
+            sensLabel.AnchorPoint = Vector2.new(0, 0)
+            sensLabel.AutoButtonColor = false
+            sensLabel.BackgroundTransparency = 0.6
+            sensLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 60)
+            regHide(sensLabel)
+
+            -- 灵敏度标签实时更新（用 RunService.Heartbeat 或 task.spawn）
+            task.spawn(function()
+                while sensLabel.Parent do
+                    sensLabel.Text = ("灵敏度 %.2fx"):format(LOOK_SENS_K)
+                    task.wait(0.15)
+                end
+            end)
+
+            -- VR 眼镜控制模式按钮
             local gyroVRBtn = createBtn(mobileGui, "GyroVRBtn", UDim2.fromScale(0.20, 0.15), UDim2.fromScale(0.18, 0.06), "眼镜:关", 13)
             gyroVRBtn.AnchorPoint = Vector2.new(0, 0)
             gyroVRBtn.BackgroundColor3 = Color3.fromRGB(0, 60, 120)
@@ -1162,6 +1306,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroVRBtn)
+            regHide(gyroVRBtn)
 
             local gyroVRHandBtn = createBtn(mobileGui, "GyroVRHandBtn", UDim2.fromScale(0.20, 0.22), UDim2.fromScale(0.18, 0.06), "眼镜手:右", 13)
             gyroVRHandBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1175,6 +1320,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroVRHandBtn)
+            regHide(gyroVRHandBtn)
 
             local gyroVRHeadBtn = createBtn(mobileGui, "GyroVRHeadBtn", UDim2.fromScale(0.20, 0.29), UDim2.fromScale(0.18, 0.06), "眼镜头:开", 13)
             gyroVRHeadBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1189,6 +1335,7 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroVRHeadBtn)
+            regHide(gyroVRHeadBtn)
 
             local gyroVRHandToggleBtn = createBtn(mobileGui, "GyroVRHandToggleBtn", UDim2.fromScale(0.20, 0.36), UDim2.fromScale(0.18, 0.06), "眼镜手:开", 13)
             gyroVRHandToggleBtn.AnchorPoint = Vector2.new(0, 0)
@@ -1203,23 +1350,41 @@ task.spawn(function()
                 end
             end)
             bindPress(gyroVRHandToggleBtn)
+            regHide(gyroVRHandToggleBtn)
 
-            -- ===== 移动速度过渡按钮 =====
-            local moveSmoothBtn = createBtn(mobileGui, "MoveSmoothBtn", UDim2.fromScale(0.20, 0.43), UDim2.fromScale(0.18, 0.06), "平滑:关", 13)
+            -- 移动速度过渡按钮
+            local moveSmoothBtn = createBtn(mobileGui, "MoveSmoothBtn", UDim2.fromScale(0.20, 0.43), UDim2.fromScale(0.18, 0.06), "移动平滑:关", 12)
             moveSmoothBtn.AnchorPoint = Vector2.new(0, 0)
             moveSmoothBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
             moveSmoothBtn.BackgroundTransparency = 0.35
             moveSmoothBtn.InputBegan:Connect(function(i)
                 if i.UserInputType == Enum.UserInputType.Touch then
                     moveSmoothOn = not moveSmoothOn
-                    moveSmoothBtn.Text = moveSmoothOn and "平滑:开" or "平滑:关"
+                    moveSmoothBtn.Text = moveSmoothOn and "移动平滑:开" or "移动平滑:关"
                     moveSmoothBtn.BackgroundColor3 = moveSmoothOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
                 end
             end)
             bindPress(moveSmoothBtn)
+            regHide(moveSmoothBtn)
 
-            -- ===== 手部位置重置按钮 =====
-            local handResetBtn = createBtn(mobileGui, "HandResetBtn", UDim2.fromScale(0.20, 0.50), UDim2.fromScale(0.18, 0.06), "手部重置", 13)
+            -- ===== 视角平滑按钮 =====
+            local lookSmoothBtn = createBtn(mobileGui, "LookSmoothBtn", UDim2.fromScale(0.20, 0.50), UDim2.fromScale(0.18, 0.06), "视角平滑:关", 12)
+            lookSmoothBtn.AnchorPoint = Vector2.new(0, 0)
+            lookSmoothBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            lookSmoothBtn.BackgroundTransparency = 0.35
+            lookSmoothBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    lookSmoothOn = not lookSmoothOn
+                    if not lookSmoothOn then lookSmoothTarget = Vector2.zero end
+                    lookSmoothBtn.Text = lookSmoothOn and "视角平滑:开" or "视角平滑:关"
+                    lookSmoothBtn.BackgroundColor3 = lookSmoothOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(lookSmoothBtn)
+            regHide(lookSmoothBtn)
+
+            -- 手部位置重置按钮
+            local handResetBtn = createBtn(mobileGui, "HandResetBtn", UDim2.fromScale(0.20, 0.57), UDim2.fromScale(0.18, 0.06), "手部重置", 13)
             handResetBtn.AnchorPoint = Vector2.new(0, 0)
             handResetBtn.BackgroundColor3 = Color3.fromRGB(140, 60, 0)
             handResetBtn.BackgroundTransparency = 0.35
@@ -1231,6 +1396,7 @@ task.spawn(function()
                 end
             end)
             bindPress(handResetBtn)
+            regHide(handResetBtn)
 
             -- 滑块
             local sliders = {}
@@ -1261,6 +1427,7 @@ task.spawn(function()
                 local thumbOffset = (ratio - 0.5) * (track.AbsoluteSize.X - thumb.AbsoluteSize.X)
                 thumb.Position = UDim2.fromOffset(thumbOffset, 0) + UDim2.fromScale(0.5, 0.5)
                 table.insert(sliders, slider)
+                regHide(track)
                 return slider
             end
 
@@ -1289,6 +1456,7 @@ task.spawn(function()
                 local thumbOffset = (0.5 - ratio) * (track.AbsoluteSize.Y - thumb.AbsoluteSize.Y)
                 thumb.Position = UDim2.fromOffset(0, thumbOffset) + UDim2.fromScale(0.5, 0.5)
                 table.insert(sliders, slider)
+                regHide(track)
                 return slider
             end
 
@@ -1308,39 +1476,48 @@ task.spawn(function()
             waveBtn.AnchorPoint = Vector2.new(0.5, 1)
             waveBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then waveStartTime = os.clock() end end)
             bindPress(waveBtn)
+            regHide(waveBtn)
             local clapBtn = createBtn(mobileGui, "ClapBtn", UDim2.fromScale(0.12, 0.36), UDim2.fromScale(0.1, 0.05), "👏", 20)
             clapBtn.AnchorPoint = Vector2.new(0.5, 1)
             clapBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then clapStartTime = os.clock() end end)
             bindPress(clapBtn)
+            regHide(clapBtn)
             local startleBtn = createBtn(mobileGui, "StartleBtn", UDim2.fromScale(0.12, 0.32), UDim2.fromScale(0.1, 0.05), "😱", 20)
             startleBtn.AnchorPoint = Vector2.new(0.5, 1)
             startleBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then startleStartTime = os.clock() end end)
             bindPress(startleBtn)
+            regHide(startleBtn)
             local flexBtn = createBtn(mobileGui, "FlexBtn", UDim2.fromScale(0.12, 0.28), UDim2.fromScale(0.1, 0.05), "💪", 20)
             flexBtn.AnchorPoint = Vector2.new(0.5, 1)
             flexBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then flexStartTime = os.clock() end end)
             bindPress(flexBtn)
+            regHide(flexBtn)
             local throwBtn = createBtn(mobileGui, "ThrowBtn", UDim2.fromScale(0.12, 0.24), UDim2.fromScale(0.1, 0.05), "🤾", 20)
             throwBtn.AnchorPoint = Vector2.new(0.5, 1)
             throwBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then doThrow() end end)
             bindPress(throwBtn)
+            regHide(throwBtn)
             local punchBtn = createBtn(mobileGui, "PunchBtn", UDim2.fromScale(0.88, 0.35), UDim2.fromScale(0.1, 0.05), "👊", 20)
             punchBtn.AnchorPoint = Vector2.new(0.5, 1)
             punchBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then punchStartTime = os.clock() end end)
             bindPress(punchBtn)
+            regHide(punchBtn)
             local blockBtn = createBtn(mobileGui, "BlockBtn", UDim2.fromScale(0.88, 0.30), UDim2.fromScale(0.1, 0.05), "🛡️", 20)
             blockBtn.AnchorPoint = Vector2.new(0.5, 1)
             blockBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then blockStartTime = os.clock() end end)
             bindPress(blockBtn)
+            regHide(blockBtn)
 
             local function findSliderAt(pos)
                 for _, slider in ipairs(sliders) do
                     local track = slider.track
-                    local absPos = track.AbsolutePosition
-                    local absSize = track.AbsoluteSize
-                    if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                        and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
-                        return slider
+                    if track.Visible then
+                        local absPos = track.AbsolutePosition
+                        local absSize = track.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return slider
+                        end
                     end
                 end
                 return nil
@@ -1379,20 +1556,25 @@ task.spawn(function()
             local function isInsideAnyControl(pos)
                 for _, slider in ipairs(sliders) do
                     local track = slider.track
-                    local absPos = track.AbsolutePosition
-                    local absSize = track.AbsoluteSize
-                    if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                        and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
-                        return true
+                    if track.Visible then
+                        local absPos = track.AbsolutePosition
+                        local absSize = track.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return true
+                        end
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, handResetBtn}
-                for _, btn in ipairs(allBtns) do
-                    local btnAbsPos = btn.AbsolutePosition
-                    local btnAbsSize = btn.AbsoluteSize
-                    if pos.X >= btnAbsPos.X and pos.X <= btnAbsPos.X + btnAbsSize.X
-                        and pos.Y >= btnAbsPos.Y and pos.Y <= btnAbsPos.Y + btnAbsSize.Y then
-                        return true
+                -- 只检查顶层容器和独立按钮（父容器隐藏时子按钮也隐藏）
+                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
+                for _, el in ipairs(topLevel) do
+                    if el.Visible then
+                        local absPos = el.AbsolutePosition
+                        local absSize = el.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return true
+                        end
                     end
                 end
                 return false
@@ -1400,7 +1582,6 @@ task.spawn(function()
 
             local touchLook = false
             local lastTouch = Vector2.zero
-            local touchSens = 0.005
             local viewport = workspace.CurrentCamera.ViewportSize
 
             UIS.TouchStarted:Connect(function(i)
@@ -1435,13 +1616,7 @@ task.spawn(function()
                     end
                 elseif touchLook then
                     local delta = i.Position - lastTouch
-                    if gyroMode and gyroVRMode and gyroVRHeadOn then
-                        if headBaseYaw then headBaseYaw = headBaseYaw - delta.X * touchSens end
-                        if headBasePitch then headBasePitch = math.clamp(headBasePitch - delta.Y * touchSens, -1.45, 1.45) end
-                    else
-                        yaw = yaw - delta.X * touchSens
-                        pitch = math.clamp(pitch - delta.Y * touchSens, -1.45, 1.45)
-                    end
+                    addLookInput(delta.X, delta.Y)
                     lastTouch = i.Position
                 end
             end)
