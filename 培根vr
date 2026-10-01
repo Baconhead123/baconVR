@@ -144,6 +144,14 @@ task.spawn(function()
     local GYRO_MIRROR_L = 1.0
     local GYRO_MIRROR_R = -1.0
 
+    -- ===== VR 眼镜控制模式 =====
+    -- 开启后：位置固定在身前，只做旋转跟随，仅控制单只手
+    local gyroVRMode = false       -- 是否开启 VR 眼镜控制模式
+    local gyroVRHand = "right"     -- 只控制哪只手: "left" / "right"
+    local GYRO_VR_ROT_K = 1.0      -- 旋转跟随倍率（1.0 = 1:1 跟手）
+    local GYRO_VR_POS_K = 0.0      -- 位置跟随倍率（0 = 位置固定，像握着控制器）
+    local GYRO_VR_POS_MAX = 0.3    -- VR 模式下位置摆动上限（当 POS_K > 0 时生效）
+
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
             if not cf then return end
@@ -223,8 +231,14 @@ task.spawn(function()
                     end
                 end
 
+                -- VR 眼镜控制模式：左手（位置固定，只受旋转控制）
+                if gyroMode and gyroVRMode and gyroVRHand == "left" then
+                    local basePos = Vector3.new(-S.spread, S.height, -S.leftReach) * scale
+                    return CFrame.new(basePos) * gyroRotL
+                end
+
                 -- 陀螺仪：左手
-                if gyroMode and (gyroHand == "left" or gyroHand == "both") then
+                if gyroMode and not gyroVRMode and (gyroHand == "left" or gyroHand == "both") then
                     local basePos = Vector3.new(-S.spread, S.height, -S.leftReach)
                     local pos = (basePos + gyroPosL) * scale
                     return CFrame.new(pos) * gyroRotL
@@ -296,8 +310,14 @@ task.spawn(function()
                     end
                 end
 
+                -- VR 眼镜控制模式：右手（位置固定，只受旋转控制）
+                if gyroMode and gyroVRMode and gyroVRHand == "right" then
+                    local basePos = Vector3.new(S.spread, S.height, -S.rightReach) * scale
+                    return CFrame.new(basePos) * gyroRotR
+                end
+
                 -- 陀螺仪：右手
-                if gyroMode and (gyroHand == "right" or gyroHand == "both") then
+                if gyroMode and not gyroVRMode and (gyroHand == "right" or gyroHand == "both") then
                     local basePos = Vector3.new(S.spread, S.height, -S.rightReach)
                     local pos = (basePos + gyroPosR) * scale
                     return CFrame.new(pos) * gyroRotR
@@ -506,6 +526,22 @@ task.spawn(function()
                 resetGyroRef()
                 print("[NoVR] 陀螺仪已重置")
             end
+            -- VR 眼镜控制模式开关
+            if io.KeyCode == Enum.KeyCode.V then
+                gyroVRMode = not gyroVRMode
+                if gyroVRMode and not gyroMode then
+                    gyroMode = true
+                end
+                resetGyroRef()
+                print("[NoVR] VR眼镜控制模式: " .. (gyroVRMode and "开" or "关")
+                    .. "  控制手: " .. (gyroVRHand == "left" and "左手" or "右手"))
+            end
+            -- VR 眼镜控制手切换
+            if io.KeyCode == Enum.KeyCode.B then
+                gyroVRHand = (gyroVRHand == "left") and "right" or "left"
+                resetGyroRef()
+                print("[NoVR] VR眼镜控制手切换为: " .. (gyroVRHand == "left" and "左手" or "右手"))
+            end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -591,19 +627,24 @@ task.spawn(function()
             rz = math.clamp(rz, -GYRO_ROT_MAX, GYRO_ROT_MAX)
             local rL, pL, zL = rx, ry, rz
             local rR, pR, zR = rx, ry, rz
-            if gyroHand == "left" then rR, pR, zR = 0, 0, 0
+            if gyroVRMode then
+                -- VR 眼镜控制模式：只驱动被选中的那只手
+                if gyroVRHand == "left" then rR, pR, zR = 0, 0, 0
+                else rL, pL, zL = 0, 0, 0 end
+            elseif gyroHand == "left" then rR, pR, zR = 0, 0, 0
             elseif gyroHand == "right" then rL, pL, zL = 0, 0, 0 end
-            local rk = GYRO_ROT_K
+            local rk = gyroVRMode and GYRO_VR_ROT_K or GYRO_ROT_K
             local targetRL = CFrame.fromEulerAnglesYXZ(rL * rk * GYRO_MIRROR_L, pL * rk * GYRO_MIRROR_L, zL * rk * GYRO_MIRROR_L)
             local targetRR = CFrame.fromEulerAnglesYXZ(rR * rk * GYRO_MIRROR_R * -1, pR * rk * GYRO_MIRROR_R * -1, zR * rk * GYRO_MIRROR_R * -1)
             local aR = 1 - math.exp(-GYRO_ROT_SMOOTH * dt)
             gyroRotL = gyroRotL:Lerp(targetRL, aR)
             gyroRotR = gyroRotR:Lerp(targetRR, aR)
-            local pk = GYRO_POS_K
+            local pk = gyroVRMode and GYRO_VR_POS_K or GYRO_POS_K
+            local posMax = gyroVRMode and GYRO_VR_POS_MAX or GYRO_POS_MAX
             local targetGyroL = Vector3.new(-pL * pk * GYRO_MIRROR_L, zL * pk * GYRO_MIRROR_L * 0.6, -rL * pk * 0.4)
             local targetGyroR = Vector3.new(-pR * pk * GYRO_MIRROR_R, zR * pk * GYRO_MIRROR_R * 0.6, -rR * pk * 0.4)
-            if targetGyroL.Magnitude > GYRO_POS_MAX then targetGyroL = targetGyroL.Unit * GYRO_POS_MAX end
-            if targetGyroR.Magnitude > GYRO_POS_MAX then targetGyroR = targetGyroR.Unit * GYRO_POS_MAX end
+            if targetGyroL.Magnitude > posMax then targetGyroL = targetGyroL.Unit * posMax end
+            if targetGyroR.Magnitude > posMax then targetGyroR = targetGyroR.Unit * posMax end
             local aP = 1 - math.exp(-GYRO_ROT_SMOOTH * dt)
             gyroPosL = gyroPosL:Lerp(targetGyroL, aP)
             gyroPosR = gyroPosR:Lerp(targetGyroR, aP)
@@ -1003,6 +1044,39 @@ task.spawn(function()
             end)
             bindPress(gyroRadiusBtn)
 
+            -- ===== VR 眼镜控制模式按钮 =====
+            local gyroVRBtn = createBtn(mobileGui, "GyroVRBtn", UDim2.fromScale(0.20, 0.15), UDim2.fromScale(0.18, 0.06), "眼镜:关", 13)
+            gyroVRBtn.AnchorPoint = Vector2.new(0, 0)
+            gyroVRBtn.BackgroundColor3 = Color3.fromRGB(0, 60, 120)
+            gyroVRBtn.BackgroundTransparency = 0.35
+            gyroVRBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    gyroVRMode = not gyroVRMode
+                    if gyroVRMode and not gyroMode then
+                        gyroMode = true
+                        gyroBtn.Text = "陀螺仪:开"
+                        gyroBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 0)
+                    end
+                    resetGyroRef()
+                    gyroVRBtn.Text = gyroVRMode and "眼镜:开" or "眼镜:关"
+                    gyroVRBtn.BackgroundColor3 = gyroVRMode and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(0, 60, 120)
+                end
+            end)
+            bindPress(gyroVRBtn)
+
+            local gyroVRHandBtn = createBtn(mobileGui, "GyroVRHandBtn", UDim2.fromScale(0.20, 0.22), UDim2.fromScale(0.18, 0.06), "眼镜手:右", 13)
+            gyroVRHandBtn.AnchorPoint = Vector2.new(0, 0)
+            gyroVRHandBtn.BackgroundColor3 = Color3.fromRGB(0, 80, 140)
+            gyroVRHandBtn.BackgroundTransparency = 0.35
+            gyroVRHandBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    gyroVRHand = (gyroVRHand == "left") and "right" or "left"
+                    resetGyroRef()
+                    gyroVRHandBtn.Text = "眼镜手:" .. (gyroVRHand == "left" and "左" or "右")
+                end
+            end)
+            bindPress(gyroVRHandBtn)
+
             -- 滑块
             local sliders = {}
             local activeSliderTouches = {}
@@ -1157,7 +1231,7 @@ task.spawn(function()
                         return true
                     end
                 end
-                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn}
+                local allBtns = {waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, shakeBtn, handBtn, timeBox, timeMinus, timePlus, timeLabel, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, gyroVRBtn, gyroVRHandBtn}
                 for _, btn in ipairs(allBtns) do
                     local btnAbsPos = btn.AbsolutePosition
                     local btnAbsSize = btn.AbsoluteSize
