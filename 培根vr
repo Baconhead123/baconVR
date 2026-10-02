@@ -22,14 +22,17 @@ do
     end
     print("[VR Hands No-VR] UNC test passed - launching.")
 end
+
 local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
+
 local hrs = [==[
 local VRService = game:GetService("VRService")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local identity = CFrame.identity
+
 do
     local mt = getrawmetatable(game)
     local oldIndex = mt.__index
@@ -49,6 +52,7 @@ do
     end)
     setreadonly(mt, true)
 end
+
 task.spawn(function()
     local function ensureFolder(p, n)
         local f = p:FindFirstChild(n)
@@ -79,10 +83,12 @@ task.spawn(function()
         task.wait(0.1)
     end
 end)
+
 task.spawn(function()
     local lp = Players.LocalPlayer
     while not lp do task.wait() lp = Players.LocalPlayer end
     local uid = tostring(lp.UserId)
+
     local vrPlayers = workspace:WaitForChild("VRPlayers", 60)
     if not vrPlayers then warn("[NoVR] no VRPlayers") return end
     local rig = vrPlayers:WaitForChild(uid, 60)
@@ -90,8 +96,10 @@ task.spawn(function()
     rig:WaitForChild("VRHead", 20)
     rig:WaitForChild("LeftHand", 20)
     rig:WaitForChild("RightHand", 20)
+
     local scaleVal = rig:FindFirstChild("VRScale")
     local cam = workspace.CurrentCamera
+
     local S = {
         leftReach = 0.55,
         rightReach = 0.55,
@@ -126,7 +134,6 @@ task.spawn(function()
     local throwingHand = nil
     local throwReleasePending = nil
 
-    -- ===== 甩人模式状态 =====
     local shakeMode = false
     local shakeTargetList = {}
     local shakeIndex = 0
@@ -135,7 +142,6 @@ task.spawn(function()
     local SHAKE_AMP = 6.5
     local shakeBothHands = true
 
-    -- ===== 陀螺仪状态 =====
     local gyroMode = false
     local gyroHand = "both"
     local gyroNow, gyroBase = nil, nil
@@ -150,7 +156,6 @@ task.spawn(function()
     local GYRO_MIRROR_L = 1.0
     local GYRO_MIRROR_R = -1.0
 
-    -- ===== VR 眼镜控制模式 =====
     local gyroVRMode = false
     local gyroVRHand = "right"
     local gyroVRHandOn = true
@@ -159,7 +164,6 @@ task.spawn(function()
     local GYRO_VR_POS_K = 0.0
     local GYRO_VR_POS_MAX = 0.3
 
-    -- ===== VR 头部跟随参数 =====
     local headGyroBase = nil
     local headBaseYaw, headBasePitch = nil, nil
     local GYRO_VR_HEAD_K = 1.0
@@ -167,14 +171,12 @@ task.spawn(function()
     local GYRO_VR_HEAD_YAW_SIGN = -1
     local GYRO_VR_HEAD_PITCH_SIGN = 1
 
-    -- ===== 移动速度平滑 =====
     local moveSmoothOn = false
     local moveVel = Vector3.zero
     local MOVE_ACCEL = 6.0
     local MOVE_DECEL = 8.0
     local MOVE_MIN_SPEED = 0.02
 
-    -- ===== 视角灵敏度 & 平滑 =====
     local LOOK_SENS_K = 1.0
     local LOOK_SENS_MIN = 0.1
     local LOOK_SENS_MAX = 5.0
@@ -183,17 +185,12 @@ task.spawn(function()
     local lookSmoothRate = 20
     local lookSmoothTarget = Vector2.zero
 
-    -- ===== UI 隐藏 =====
     local uiHidden = false
     local hideList = {}
-    local function regHide(el)
-        table.insert(hideList, el)
-    end
+    local function regHide(el) table.insert(hideList, el) end
     local function setUIHidden(hidden)
         for _, el in ipairs(hideList) do
-            if el and el.Parent then
-                el.Visible = not hidden
-            end
+            if el and el.Parent then el.Visible = not hidden end
         end
     end
     local hideToggleBtnRef = nil
@@ -466,6 +463,13 @@ task.spawn(function()
         end
     end)
 
+    -------------------------------------------------------------
+    -- ★ 关键修复：抓取半径
+    -- 原版逻辑：radius 乘以缩放系数后，手贴太近时半径太小检测不到
+    -- 修复：加一个最小半径，保证近距离必定能命中
+    -------------------------------------------------------------
+    local MIN_GRAB_RADIUS = 8      -- 最小检测半径（studs）；嫌抓太远可以调小
+
     pcall(function()
         local pmMT = getrawmetatable(vrm.PropManager)
         if pmMT and rawget(pmMT, "GetBestGrabPartInRadius") then
@@ -474,6 +478,9 @@ task.spawn(function()
             pmMT.GetBestGrabPartInRadius = function(self, root, prox, radius, scale, ...)
                 local scaleComp = 10 / math.max(S.scale, 0.1)
                 local adjustedRadius = radius * scaleComp * S.grabRadiusMult
+                if adjustedRadius < MIN_GRAB_RADIUS then
+                    adjustedRadius = MIN_GRAB_RADIUS
+                end
                 return orig(self, root, prox, adjustedRadius, scale, ...)
             end
             setreadonly(pmMT, true)
@@ -485,6 +492,9 @@ task.spawn(function()
             cmMT.GetClosestCharacterInRadius = function(self, pos, radius, ...)
                 local scaleComp = 10 / math.max(S.scale, 0.1)
                 local adjustedRadius = radius * scaleComp * S.grabRadiusMult
+                if adjustedRadius < MIN_GRAB_RADIUS then
+                    adjustedRadius = MIN_GRAB_RADIUS
+                end
                 return orig(self, pos, adjustedRadius, ...)
             end
             setreadonly(cmMT, true)
@@ -610,9 +620,7 @@ task.spawn(function()
             end
             if io.KeyCode == Enum.KeyCode.V then
                 gyroVRMode = not gyroVRMode
-                if gyroVRMode and not gyroMode then
-                    gyroMode = true
-                end
+                if gyroVRMode and not gyroMode then gyroMode = true end
                 resetGyroRef()
                 print("[NoVR] VR眼镜控制模式: " .. (gyroVRMode and "开" or "关")
                     .. "  控制手: " .. (gyroVRHand == "left" and "左手" or "右手"))
@@ -840,7 +848,6 @@ task.spawn(function()
         end
     end)
 
-    -- 移动端控制
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
@@ -1609,9 +1616,11 @@ task.spawn(function()
             end)
         end
     end)
+
     print("[NoVR] control active.")
 end)
 ]==]
+
 local function teleportToCurrentServer()
     local ok, err = pcall(function()
         TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
@@ -1621,6 +1630,7 @@ local function teleportToCurrentServer()
         TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
     end
 end
+
 if queue_on_teleport then
     queue_on_teleport(hrs)
     teleportToCurrentServer()
