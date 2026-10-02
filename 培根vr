@@ -97,7 +97,7 @@ task.spawn(function()
     rig:WaitForChild("LeftHand", 20)
     rig:WaitForChild("RightHand", 20)
 
-    -- ★ 新增: 玩家头部件引用
+    -- ★ 玩家头部件引用
     local headPart = rig:FindFirstChild("VRHead")
 
     local scaleVal = rig:FindFirstChild("VRScale")
@@ -185,21 +185,21 @@ task.spawn(function()
     local dynamicShakeOn = false
     local humanSwayOn = false
 
-    -- ★ 动态摇晃参数（幅度加大 ~2.5 倍）
-    local DYN_SHAKE_K = 0.055
+    -- ★ 动态摇晃参数（幅度加大 4 倍）
+    local DYN_SHAKE_K = 0.22
     local DYN_SHAKE_SPRING = 80
     local DYN_SHAKE_DAMP = 12
-    local DYN_SHAKE_YAW_MAX   = 0.20
-    local DYN_SHAKE_PITCH_MAX = 0.16
-    local DYN_SHAKE_ROLL_MAX  = 0.12
+    local DYN_SHAKE_YAW_MAX   = 0.80
+    local DYN_SHAKE_PITCH_MAX = 0.64
+    local DYN_SHAKE_ROLL_MAX  = 0.48
     local dynShakeYaw, dynShakePitch, dynShakeRoll = 0, 0, 0
     local dynShakeVelYaw, dynShakeVelPitch, dynShakeVelRoll = 0, 0, 0
     local lastYawForShake, lastPitchForShake = 0, 0
 
-    -- ★ 模仿真人参数（幅度加大 ~2.8 倍）
-    local HUMAN_SWAY_YAW_K   = 0.028
-    local HUMAN_SWAY_PITCH_K = 0.022
-    local HUMAN_SWAY_ROLL_K  = 0.035
+    -- ★ 模仿真人参数（幅度加大 4 倍）
+    local HUMAN_SWAY_YAW_K   = 0.112
+    local HUMAN_SWAY_PITCH_K = 0.088
+    local HUMAN_SWAY_ROLL_K  = 0.140
     local HUMAN_SWAY_FADE_IN = 1.5
     local humanSwayT = 0
     local humanSwayIntensity = 0
@@ -228,6 +228,12 @@ task.spawn(function()
         end
     end
     local hideToggleBtnRef = nil
+
+    -- ★ 手部延迟 & 手不晃（晃动只作用于头）
+    local handDelayOn = false          -- 手部延迟开关
+    local HAND_DELAY_TIME = 0.3        -- 0.3 秒延迟
+    local handSmoothYaw, handSmoothPitch = nil, nil
+    local handComp = CFrame.new()      -- 由渲染步骤更新；用于把晃动从手部解耦 + 手部延迟
 
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
@@ -294,7 +300,7 @@ task.spawn(function()
         return require(lp.PlayerScripts.ClientLoader.PlayerModule.VRModule.VRUtils)
     end)
     if ok and type(VRUtils) == "table" then
-        VRUtils.GetUserCFrame = function(uc, scale)
+        local _rawGetUserCFrame = function(uc, scale)
             scale = scale or cam.HeadScale
             if scale <= 1 then scale = math.max((scaleVal and scaleVal.Value or 1) * 60, 6) end
             local now = os.clock()
@@ -467,6 +473,16 @@ task.spawn(function()
                 return CFrame.new(basePos) * rot
             end
             return identity
+        end
+
+        VRUtils.GetUserCFrame = function(uc, scale)
+            local r = _rawGetUserCFrame(uc, scale)
+            if uc == Enum.UserCFrame.LeftHand or uc == Enum.UserCFrame.RightHand then
+                -- 把手放到“不含晃动的相机旋转”坐标系里 = 手不晃；
+                -- handComp 里的 handSmoothYaw/Pitch 就是手部延迟
+                return handComp * r
+            end
+            return r
         end
     else
         warn("[NoVR] failed to intercept VRUtils")
@@ -707,6 +723,14 @@ task.spawn(function()
                 humanSwayOn = not humanSwayOn
                 print("[NoVR] 模仿真人: " .. (humanSwayOn and "开" or "关"))
             end
+            if io.KeyCode == Enum.KeyCode.Seven then
+                handDelayOn = not handDelayOn
+                if not handDelayOn then
+                    handSmoothYaw = yaw
+                    handSmoothPitch = pitch
+                end
+                print("[NoVR] 手部延迟: " .. (handDelayOn and "开" or "关"))
+            end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -877,7 +901,7 @@ task.spawn(function()
             gyroPosR = gyroPosR:Lerp(Vector3.zero, aR)
         end
 
-        -- 动态摇晃（幅度加大）
+        -- 动态摇晃（幅度加大 4 倍）
         if dynamicShakeOn then
             local safeDt = math.max(dt, 0.001)
             local yawRate = (yaw - lastYawForShake) / safeDt
@@ -902,7 +926,7 @@ task.spawn(function()
             lastPitchForShake = pitch
         end
 
-        -- 模仿真人（幅度加大）
+        -- 模仿真人（幅度加大 4 倍）
         humanSwayT = humanSwayT + dt
         if humanSwayOn then
             humanSwayIntensity = math.min(humanSwayIntensity + dt * HUMAN_SWAY_FADE_IN, 1)
@@ -923,6 +947,23 @@ task.spawn(function()
         local finalRoll  = dynShakeRoll + humanRoll
 
         local rot = CFrame.fromEulerAnglesYXZ(finalPitch, finalYaw, finalRoll)
+
+        -- ★ 计算手部补偿 CFrame：
+        --   rot 是“带头部晃动”的完整旋转；handTargetRot 是“不带晃动 + 手部延迟”的旋转
+        --   handComp = rot^-1 * handTargetRot，会让手的世界位置剥离晃动、只跟随延迟后的基础朝向
+        if not handSmoothYaw then handSmoothYaw = yaw end
+        if not handSmoothPitch then handSmoothPitch = pitch end
+        if handDelayOn then
+            local aH = 1 - math.exp(-dt / HAND_DELAY_TIME)
+            handSmoothYaw   = handSmoothYaw   + (yaw   - handSmoothYaw)   * aH
+            handSmoothPitch = handSmoothPitch + (pitch - handSmoothPitch) * aH
+        else
+            handSmoothYaw = yaw
+            handSmoothPitch = pitch
+        end
+        local handTargetRot = CFrame.fromEulerAnglesYXZ(handSmoothPitch, handSmoothYaw, 0)
+        handComp = rot:Inverse() * handTargetRot
+
         local hs = cam.HeadScale; if hs <= 1 then hs = S.scale * 6 end
         local spd = (10 + S.scale * 4) * hs * S.moveK * S.speedMult
 
@@ -949,13 +990,15 @@ task.spawn(function()
         end
 
         if moveVel.Magnitude > 0 then
-            camPos = camPos + (rot * moveVel) * dt
+            -- 用不含晃动的旋转来移动，避免晃动导致走位乱飘
+            local moveRot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
+            camPos = camPos + (moveRot * moveVel) * dt
         end
 
         cam.CameraType = Enum.CameraType.Scriptable
         cam.CFrame = CFrame.new(camPos) * rot
 
-        -- ★ 关键新增: 玩家头部件也应用相同的朝向（平滑 & 晃动都同步到头）
+        -- ★ 玩家头部件也应用相同的朝向（平滑 & 晃动都同步到头）
         if headPart and headPart.Parent then
             pcall(function()
                 local hp = headPart.Position
@@ -1534,6 +1577,24 @@ task.spawn(function()
             bindPress(humanSwayBtn)
             regHide(humanSwayBtn)
 
+            local handDelayBtn = createBtn(mobileGui, "HandDelayBtn", UDim2.fromScale(0.20, 0.78), UDim2.fromScale(0.18, 0.06), "手部延迟:关", 12)
+            handDelayBtn.AnchorPoint = Vector2.new(0, 0)
+            handDelayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            handDelayBtn.BackgroundTransparency = 0.35
+            handDelayBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    handDelayOn = not handDelayOn
+                    if not handDelayOn then
+                        handSmoothYaw = yaw
+                        handSmoothPitch = pitch
+                    end
+                    handDelayBtn.Text = handDelayOn and "手部延迟:开" or "手部延迟:关"
+                    handDelayBtn.BackgroundColor3 = handDelayOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(handDelayBtn)
+            regHide(handDelayBtn)
+
             local sliders = {}
             local activeSliderTouches = {}
 
@@ -1708,7 +1769,7 @@ task.spawn(function()
                         end
                     end
                 end
-                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, dynShakeBtn, humanSwayBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
+                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, dynShakeBtn, humanSwayBtn, handDelayBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
                 for _, el in ipairs(topLevel) do
                     if el.Visible then
                         local absPos = el.AbsolutePosition
