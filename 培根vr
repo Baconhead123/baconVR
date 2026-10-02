@@ -185,31 +185,26 @@ task.spawn(function()
 
     -- ===== UI 隐藏 =====
     local uiHidden = false
-    local setUIHiddenFn = nil
+    local hideList = {}
+    local function regHide(el)
+        table.insert(hideList, el)
+    end
+    local function setUIHidden(hidden)
+        for _, el in ipairs(hideList) do
+            if el and el.Parent then
+                el.Visible = not hidden
+            end
+        end
+    end
 
     -- ===== 挡脸模式 =====
     local faceBlockOn = false           -- 挡脸是否生效
-    local faceBlockTarget = nil         -- 目标玩家对象
-    local faceBlockPanelOpen = false    -- 玩家列表是否显示
-    local faceBlockPanel = nil
-    local faceBlockScroll = nil
-    local faceBlockBtn = nil
-    local FACE_BLOCK_FWD = 8            -- 手距脸前方（世界单位）
-    local FACE_BLOCK_SIDE = 2.5         -- 左右偏移（世界单位）
-    local FACE_BLOCK_UP = 0             -- 上下偏移（世界单位）
-
-    local function getFaceBlockCFrame(hand)
-        if not faceBlockOn then return nil end
-        local t = faceBlockTarget
-        if not t then return nil end
-        local char = t.Character
-        if not char then return nil end
-        local head = char:FindFirstChild("Head")
-        if not head then return nil end
-        local side = (hand == "left") and -FACE_BLOCK_SIDE or FACE_BLOCK_SIDE
-        local worldCF = head.CFrame * CFrame.new(side, FACE_BLOCK_UP, -FACE_BLOCK_FWD)
-        return cam.CFrame:Inverse() * worldCF
-    end
+    local faceBlockTarget = nil         -- 目标玩家
+    local faceBlockPanelOpen = false    -- 面板是否显示
+    local faceBlockBtn = nil            -- 挡脸按钮引用
+    local FACE_BLOCK_FWD = 8
+    local FACE_BLOCK_SIDE = 2.5
+    local FACE_BLOCK_UP = 0
 
     pcall(function()
         UIS.DeviceRotationChanged:Connect(function(_, cf)
@@ -243,6 +238,20 @@ task.spawn(function()
         gyroPosL = Vector3.zero
         gyroPosR = Vector3.zero
         print("[NoVR] 手部位置已重置到初始位置")
+    end
+
+    -- 挡脸目标头部的世界 CFrame -> 相机局部空间
+    local function getFaceBlockCFrame(hand)
+        if not faceBlockOn then return nil end
+        local t = faceBlockTarget
+        if not t then return nil end
+        local char = t.Character
+        if not char then return nil end
+        local head = char:FindFirstChild("Head")
+        if not head then return nil end
+        local side = (hand == "left") and -FACE_BLOCK_SIDE or FACE_BLOCK_SIDE
+        local worldCF = head.CFrame * CFrame.new(side, FACE_BLOCK_UP, -FACE_BLOCK_FWD)
+        return cam.CFrame:Inverse() * worldCF
     end
 
     local function getShakeTargets()
@@ -285,7 +294,7 @@ task.spawn(function()
             end
 
             if uc == Enum.UserCFrame.LeftHand then
-                -- 挡脸模式（优先级最高）
+                -- 挡脸模式（最高优先级）
                 local fbL = getFaceBlockCFrame("left")
                 if fbL then return fbL end
 
@@ -366,7 +375,6 @@ task.spawn(function()
                 end
                 return CFrame.new(basePos) * rot
             elseif uc == Enum.UserCFrame.RightHand then
-                -- 挡脸模式（优先级最高）
                 local fbR = getFaceBlockCFrame("right")
                 if fbR then return fbR end
 
@@ -571,6 +579,216 @@ task.spawn(function()
         end
     end
 
+    -- ============================================
+    -- 挡脸专用 GUI（独立，加载时立即创建，DisplayOrder 高）
+    -- ============================================
+    local faceBlockGui = Instance.new("ScreenGui")
+    faceBlockGui.Name = "NoVR_FaceBlockGui"
+    faceBlockGui.ResetOnSpawn = false
+    faceBlockGui.IgnoreGuiInset = true
+    faceBlockGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    faceBlockGui.DisplayOrder = 999
+    pcall(function() faceBlockGui.Parent = lp:WaitForChild("PlayerGui", 10) end)
+
+    local faceBlockPanel = Instance.new("Frame")
+    faceBlockPanel.Name = "Panel"
+    faceBlockPanel.Size = UDim2.fromScale(0.34, 0.58)
+    faceBlockPanel.Position = UDim2.fromScale(0.5, 0.5)
+    faceBlockPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+    faceBlockPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    faceBlockPanel.BackgroundTransparency = 0.1
+    faceBlockPanel.BorderSizePixel = 0
+    faceBlockPanel.Visible = false
+    faceBlockPanel.ZIndex = 200
+    faceBlockPanel.Parent = faceBlockGui
+    Instance.new("UICorner", faceBlockPanel).CornerRadius = UDim.new(0, 8)
+
+    local faceStroke = Instance.new("UIStroke")
+    faceStroke.Color = Color3.fromRGB(90, 90, 130)
+    faceStroke.Thickness = 1
+    faceStroke.Parent = faceBlockPanel
+
+    local faceTitle = Instance.new("TextLabel")
+    faceTitle.Size = UDim2.new(1, -80, 0, 32)
+    faceTitle.Position = UDim2.new(0, 10, 0, 6)
+    faceTitle.BackgroundTransparency = 1
+    faceTitle.Text = "选择挡脸目标"
+    faceTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    faceTitle.Font = Enum.Font.SourceSansBold
+    faceTitle.TextSize = 16
+    faceTitle.TextXAlignment = Enum.TextXAlignment.Left
+    faceTitle.ZIndex = 201
+    faceTitle.Parent = faceBlockPanel
+
+    local faceClose = Instance.new("TextButton")
+    faceClose.Size = UDim2.new(0, 30, 0, 30)
+    faceClose.Position = UDim2.new(1, -38, 0, 6)
+    faceClose.Text = "×"
+    faceClose.TextColor3 = Color3.fromRGB(255, 255, 255)
+    faceClose.BackgroundColor3 = Color3.fromRGB(150, 35, 35)
+    faceClose.Font = Enum.Font.SourceSansBold
+    faceClose.TextSize = 18
+    faceClose.BorderSizePixel = 0
+    faceClose.AutoButtonColor = false
+    faceClose.ZIndex = 202
+    Instance.new("UICorner", faceClose).CornerRadius = UDim.new(0, 6)
+    faceClose.Parent = faceBlockPanel
+
+    local faceClear = Instance.new("TextButton")
+    faceClear.Size = UDim2.new(0, 100, 0, 30)
+    faceClear.Position = UDim2.new(1, -145, 0, 6)
+    faceClear.Text = "取消挡脸"
+    faceClear.TextColor3 = Color3.fromRGB(255, 255, 255)
+    faceClear.BackgroundColor3 = Color3.fromRGB(150, 70, 30)
+    faceClear.Font = Enum.Font.SourceSansBold
+    faceClear.TextSize = 12
+    faceClear.BorderSizePixel = 0
+    faceClear.AutoButtonColor = false
+    faceClear.Visible = false
+    faceClear.ZIndex = 202
+    Instance.new("UICorner", faceClear).CornerRadius = UDim.new(0, 6)
+    faceClear.Parent = faceBlockPanel
+
+    local faceScroll = Instance.new("ScrollingFrame")
+    faceScroll.Size = UDim2.new(1, -20, 1, -50)
+    faceScroll.Position = UDim2.new(0, 10, 0, 44)
+    faceScroll.BackgroundTransparency = 1
+    faceScroll.BorderSizePixel = 0
+    faceScroll.ScrollBarThickness = 6
+    faceScroll.ScrollBarImageColor3 = Color3.fromRGB(130, 130, 150)
+    faceScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    faceScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    faceScroll.ZIndex = 201
+    faceScroll.Parent = faceBlockPanel
+
+    local faceListLayout = Instance.new("UIListLayout")
+    faceListLayout.Padding = UDim.new(0, 5)
+    faceListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    faceListLayout.Parent = faceScroll
+
+    -- 重建列表
+    local function rebuildFaceBlockList()
+        for _, c in ipairs(faceScroll:GetChildren()) do
+            if c:IsA("TextButton") then c:Destroy() end
+        end
+        faceClear.Visible = (faceBlockTarget ~= nil)
+        local count = 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= lp then
+                count = count + 1
+                local btn = Instance.new("TextButton")
+                btn.Name = "Player_" .. p.UserId
+                btn.Size = UDim2.new(1, -4, 0, 36)
+                local isSel = (p == faceBlockTarget)
+                btn.BackgroundColor3 = isSel and Color3.fromRGB(0, 150, 70) or Color3.fromRGB(48, 48, 60)
+                btn.BackgroundTransparency = 0.1
+                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                btn.Font = Enum.Font.SourceSansBold
+                btn.TextSize = 14
+                btn.Text = p.DisplayName .. "  (@" .. p.Name .. ")"
+                btn.BorderSizePixel = 0
+                btn.AutoButtonColor = false
+                btn.ZIndex = 202
+                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+                btn.Parent = faceScroll
+                btn.MouseButton1Click:Connect(function()
+                    faceBlockTarget = p
+                    faceBlockOn = true
+                    faceBlockPanelOpen = false
+                    faceBlockPanel.Visible = false
+                    if faceBlockBtn then
+                        faceBlockBtn.Text = "挡脸:ON"
+                        faceBlockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 70)
+                    end
+                    print("[NoVR] 挡脸目标: " .. p.Name)
+                end)
+            end
+        end
+        if count == 0 then
+            local empty = Instance.new("TextLabel")
+            empty.Size = UDim2.new(1, -4, 0, 36)
+            empty.BackgroundTransparency = 1
+            empty.Text = "（当前没有其他玩家）"
+            empty.TextColor3 = Color3.fromRGB(180, 180, 200)
+            empty.Font = Enum.Font.SourceSans
+            empty.TextSize = 14
+            empty.ZIndex = 202
+            empty.Parent = faceScroll
+        end
+    end
+
+    local function setFaceBlockPanelVisible(visible)
+        faceBlockPanelOpen = visible
+        if visible then
+            rebuildFaceBlockList()
+            faceBlockPanel.Visible = true
+        else
+            faceBlockPanel.Visible = false
+        end
+    end
+
+    local function toggleFaceBlockPanel()
+        setFaceBlockPanelVisible(not faceBlockPanelOpen)
+    end
+
+    -- 面板内按钮事件
+    faceClose.MouseButton1Click:Connect(function()
+        setFaceBlockPanelVisible(false)
+    end)
+
+    faceClear.MouseButton1Click:Connect(function()
+        faceBlockOn = false
+        faceBlockTarget = nil
+        faceClear.Visible = false
+        if faceBlockBtn then
+            faceBlockBtn.Text = "挡脸"
+            faceBlockBtn.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
+        end
+        setFaceBlockPanelVisible(false)
+        print("[NoVR] 取消挡脸")
+    end)
+
+    -- 玩家离开时如果他是目标，自动取消
+    Players.PlayerRemoving:Connect(function(p)
+        if p == faceBlockTarget then
+            faceBlockOn = false
+            faceBlockTarget = nil
+            if faceBlockBtn then
+                faceBlockBtn.Text = "挡脸"
+                faceBlockBtn.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
+            end
+        end
+    end)
+
+    -- ============================================
+    -- 挡脸按钮（独立挂在 faceBlockGui 上，永远可见）
+    -- ============================================
+    local fbb = Instance.new("TextButton")
+    fbb.Name = "FaceBlockBtn"
+    fbb.Size = UDim2.fromScale(0.16, 0.055)
+    fbb.Position = UDim2.fromScale(0.02, 0.06)
+    fbb.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
+    fbb.BackgroundTransparency = 0.35
+    fbb.TextColor3 = Color3.fromRGB(255, 255, 255)
+    fbb.Text = "挡脸"
+    fbb.Font = Enum.Font.SourceSansBold
+    fbb.TextSize = 14
+    fbb.AutoButtonColor = false
+    fbb.ZIndex = 200
+    fbb.Parent = faceBlockGui
+    Instance.new("UICorner", fbb).CornerRadius = UDim.new(0, 6)
+    faceBlockBtn = fbb
+
+    fbb.MouseButton1Click:Connect(function()
+        toggleFaceBlockPanel()
+    end)
+    -- 触摸按下也响应（移动端 MouseButton1Click 可能不触发，用 InputBegan 兜底）
+    fbb.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch then
+            toggleFaceBlockPanel()
+        end
+    end)
+
     task.spawn(function()
         while true do
             task.wait(0.05)
@@ -590,155 +808,6 @@ task.spawn(function()
             end
         end
     end)
-
-    -- ===== 玩家列表面板（跨平台创建） =====
-    local function buildFaceBlockPanel()
-        local parentGui = lp:WaitForChild("PlayerGui")
-        -- 复用移动端 gui 或新建一个
-        local gui = parentGui:FindFirstChild("NoVR_MobileControls")
-        if not gui then
-            gui = Instance.new("ScreenGui")
-            gui.Name = "NoVR_MobileControls"
-            gui.ResetOnSpawn = false
-            gui.IgnoreGuiInset = true
-            gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-            gui.Parent = parentGui
-        end
-
-        local panel = Instance.new("Frame")
-        panel.Name = "FaceBlockPanel"
-        panel.Size = UDim2.fromScale(0.32, 0.55)
-        panel.Position = UDim2.fromScale(0.5, 0.5)
-        panel.AnchorPoint = Vector2.new(0.5, 0.5)
-        panel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-        panel.BackgroundTransparency = 0.15
-        panel.BorderSizePixel = 0
-        panel.Visible = false
-        panel.ZIndex = 100
-        Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
-        panel.Parent = gui
-
-        local stroke = Instance.new("UIStroke")
-        stroke.Color = Color3.fromRGB(80, 80, 100)
-        stroke.Thickness = 1
-        stroke.Parent = panel
-
-        local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, -40, 0, 30)
-        title.Position = UDim2.new(0, 8, 0, 4)
-        title.BackgroundTransparency = 1
-        title.Text = "选择挡脸目标"
-        title.TextColor3 = Color3.fromRGB(255, 255, 255)
-        title.Font = Enum.Font.SourceSansBold
-        title.TextSize = 16
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Parent = panel
-
-        local closeBtn = Instance.new("TextButton")
-        closeBtn.Size = UDim2.new(0, 26, 0, 26)
-        closeBtn.Position = UDim2.new(1, -30, 0, 4)
-        closeBtn.Text = "×"
-        closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        closeBtn.BackgroundColor3 = Color3.fromRGB(140, 30, 30)
-        closeBtn.Font = Enum.Font.SourceSansBold
-        closeBtn.TextSize = 16
-        closeBtn.BorderSizePixel = 0
-        Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
-        closeBtn.Parent = panel
-        closeBtn.MouseButton1Click:Connect(function()
-            faceBlockPanelOpen = false
-            panel.Visible = false
-        end)
-
-        local scroll = Instance.new("ScrollingFrame")
-        scroll.Size = UDim2.new(1, -16, 1, -44)
-        scroll.Position = UDim2.new(0, 8, 0, 38)
-        scroll.BackgroundTransparency = 1
-        scroll.BorderSizePixel = 0
-        scroll.ScrollBarThickness = 6
-        scroll.ScrollBarImageColor3 = Color3.fromRGB(120, 120, 140)
-        scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-        scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        scroll.Parent = panel
-
-        local list = Instance.new("UIListLayout")
-        list.Padding = UDim.new(0, 5)
-        list.SortOrder = Enum.SortOrder.LayoutOrder
-        list.Parent = scroll
-
-        local clearBtn = Instance.new("TextButton")
-        clearBtn.Size = UDim2.new(0, 90, 0, 24)
-        clearBtn.Position = UDim2.new(1, -100, 0, 4)
-        clearBtn.Text = "取消挡脸"
-        clearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        clearBtn.BackgroundColor3 = Color3.fromRGB(80, 40, 40)
-        clearBtn.Font = Enum.Font.SourceSansBold
-        clearBtn.TextSize = 12
-        clearBtn.BorderSizePixel = 0
-        clearBtn.Visible = false
-        Instance.new("UICorner", clearBtn).CornerRadius = UDim.new(0, 6)
-        clearBtn.Parent = panel
-        clearBtn.MouseButton1Click:Connect(function()
-            faceBlockOn = false
-            faceBlockTarget = nil
-            clearBtn.Visible = false
-            if faceBlockBtn then
-                faceBlockBtn.Text = "挡脸"
-                faceBlockBtn.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
-            end
-        end)
-
-        faceBlockPanel = panel
-        faceBlockScroll = scroll
-        faceBlockPanel._clearBtn = clearBtn
-    end
-
-    local function rebuildFaceBlockList()
-        if not faceBlockScroll then return end
-        for _, c in ipairs(faceBlockScroll:GetChildren()) do
-            if c:IsA("TextButton") then c:Destroy() end
-        end
-        local clearBtn = faceBlockPanel and faceBlockPanel._clearBtn
-        if clearBtn then clearBtn.Visible = (faceBlockTarget ~= nil) end
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= lp then
-                local btn = Instance.new("TextButton")
-                btn.Size = UDim2.new(1, -4, 0, 34)
-                local isSel = (p == faceBlockTarget)
-                btn.BackgroundColor3 = isSel and Color3.fromRGB(0, 140, 60) or Color3.fromRGB(45, 45, 55)
-                btn.BackgroundTransparency = 0.15
-                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-                btn.Font = Enum.Font.SourceSansBold
-                btn.TextSize = 14
-                btn.Text = p.DisplayName .. "  (@" .. p.Name .. ")"
-                btn.BorderSizePixel = 0
-                Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-                btn.Parent = faceBlockScroll
-                btn.MouseButton1Click:Connect(function()
-                    faceBlockTarget = p
-                    faceBlockOn = true
-                    faceBlockPanelOpen = false
-                    if faceBlockPanel then faceBlockPanel.Visible = false end
-                    if faceBlockBtn then
-                        faceBlockBtn.Text = "挡脸:" .. p.DisplayName
-                        faceBlockBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 60)
-                    end
-                    print("[NoVR] 挡脸目标: " .. p.Name)
-                end)
-            end
-        end
-    end
-
-    local function toggleFaceBlockPanel()
-        faceBlockPanelOpen = not faceBlockPanelOpen
-        if not faceBlockPanel then buildFaceBlockPanel() end
-        if faceBlockPanelOpen then
-            rebuildFaceBlockList()
-            if faceBlockPanel then faceBlockPanel.Visible = true end
-        else
-            if faceBlockPanel then faceBlockPanel.Visible = false end
-        end
-    end
 
     UIS.InputBegan:Connect(function(io)
         if io.UserInputType == Enum.UserInputType.Keyboard then
@@ -823,14 +892,35 @@ task.spawn(function()
                 print("[NoVR] 视角平滑: " .. (lookSmoothOn and "开" or "关"))
             end
             if io.KeyCode == Enum.KeyCode.Four then
-                if setUIHiddenFn then
-                    uiHidden = not uiHidden
-                    setUIHiddenFn(uiHidden)
-                end
+                uiHidden = not uiHidden
+                setUIHidden(uiHidden)
+                if hideToggleBtnRef then hideToggleBtnRef.Text = uiHidden and "显示UI" or "隐藏UI" end
             end
-            -- 挡脸面板开关
             if io.KeyCode == Enum.KeyCode.Five then
                 toggleFaceBlockPanel()
+            end
+            if io.KeyCode == Enum.KeyCode.Six then
+                -- 直接开关挡脸（保留目标，但停用/启用）
+                if faceBlockOn then
+                    faceBlockOn = false
+                    if faceBlockBtn then
+                        faceBlockBtn.Text = "挡脸(暂停)"
+                        faceBlockBtn.BackgroundColor3 = Color3.fromRGB(80, 60, 30)
+                    end
+                    print("[NoVR] 挡脸 已暂停")
+                else
+                    if faceBlockTarget then
+                        faceBlockOn = true
+                        if faceBlockBtn then
+                            faceBlockBtn.Text = "挡脸:ON"
+                            faceBlockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 70)
+                        end
+                        print("[NoVR] 挡脸 已恢复")
+                    else
+                        print("[NoVR] 请先按 5 选择挡脸目标")
+                        toggleFaceBlockPanel()
+                    end
+                end
             end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
@@ -1015,23 +1105,18 @@ task.spawn(function()
         end
     end)
 
+    -- ============================================
     -- 移动端控制
+    -- ============================================
     pcall(function()
         if UIS.TouchEnabled then
-            local mobileGui = lp:WaitForChild("PlayerGui"):FindFirstChild("NoVR_MobileControls")
-            if not mobileGui then
-                mobileGui = Instance.new("ScreenGui")
-                mobileGui.Name = "NoVR_MobileControls"
-                mobileGui.ResetOnSpawn = false
-                mobileGui.IgnoreGuiInset = true
-                mobileGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-                mobileGui.Parent = lp:WaitForChild("PlayerGui")
-            end
+            local mobileGui = Instance.new("ScreenGui")
+            mobileGui.Name = "NoVR_MobileControls"
+            mobileGui.ResetOnSpawn = false
+            mobileGui.IgnoreGuiInset = true
+            mobileGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+            mobileGui.Parent = lp:WaitForChild("PlayerGui")
 
-            local hideList = {}
-            local function regHide(el)
-                table.insert(hideList, el)
-            end
             local function createBtn(parent, name, pos, size, text, textSize)
                 textSize = textSize or 14
                 local btn = Instance.new("TextButton")
@@ -1058,16 +1143,7 @@ task.spawn(function()
                 end)
             end
 
-            local function setUIHidden(hidden)
-                for _, el in ipairs(hideList) do
-                    if el and el.Parent then
-                        el.Visible = not hidden
-                    end
-                end
-            end
-            setUIHiddenFn = setUIHidden
-
-            -- 移动方向键（保留可见）
+            -- 保留可见：移动方向键
             local dpad = Instance.new("Frame")
             dpad.Size = UDim2.fromScale(0.28, 0.22)
             dpad.Position = UDim2.fromScale(0.03, 0.97)
@@ -1096,7 +1172,7 @@ task.spawn(function()
             bindKey(left, Enum.KeyCode.A)
             bindKey(right, Enum.KeyCode.D)
 
-            -- 上下移动（保留可见）
+            -- 保留可见：上下移动
             local vert = Instance.new("Frame")
             vert.Size = UDim2.fromScale(0.09, 0.15)
             vert.Position = UDim2.fromScale(0.03, 0.78)
@@ -1109,7 +1185,7 @@ task.spawn(function()
             bindKey(ascend, Enum.KeyCode.Space)
             bindKey(descend, Enum.KeyCode.LeftShift)
 
-            -- 抓取 & 指向（保留可见）
+            -- 保留可见：抓取 & 指向
             local grab = Instance.new("Frame")
             grab.Size = UDim2.fromScale(0.3, 0.18)
             grab.Position = UDim2.fromScale(0.97, 0.97)
@@ -1189,7 +1265,7 @@ task.spawn(function()
             end)
             bindPress(pinchR)
 
-            -- 隐藏 UI 切换按钮（保留可见）
+            -- 隐藏 UI 按钮（保留可见）
             local hideToggleBtn = createBtn(mobileGui, "HideToggleBtn", UDim2.fromScale(0.97, 0.03), UDim2.fromScale(0.16, 0.05), "隐藏UI", 13)
             hideToggleBtn.AnchorPoint = Vector2.new(1, 0)
             hideToggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
@@ -1202,22 +1278,9 @@ task.spawn(function()
                 end
             end)
             bindPress(hideToggleBtn)
+            hideToggleBtnRef = hideToggleBtn
 
-            -- 挡脸按钮（保留可见，因为可能要在隐藏 UI 时使用） — 实际上归入普通隐藏组
-            local fbb = createBtn(mobileGui, "FaceBlockBtn", UDim2.fromScale(0.02, 0.06), UDim2.fromScale(0.18, 0.06), "挡脸", 14)
-            fbb.AnchorPoint = Vector2.new(0, 0)
-            fbb.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
-            fbb.BackgroundTransparency = 0.35
-            fbb.InputBegan:Connect(function(i)
-                if i.UserInputType == Enum.UserInputType.Touch then
-                    toggleFaceBlockPanel()
-                end
-            end)
-            bindPress(fbb)
-            faceBlockBtn = fbb
-            regHide(fbb)
-
-            -- ===== 以下均为可隐藏元素 =====
+            -- ===== 以下元素会随 UI 隐藏 =====
             local func = Instance.new("Frame")
             func.Size = UDim2.fromScale(0.28, 0.42)
             func.Position = UDim2.fromScale(0.97, 0.12)
@@ -1673,198 +1736,3 @@ task.spawn(function()
             local flexBtn = createBtn(mobileGui, "FlexBtn", UDim2.fromScale(0.12, 0.28), UDim2.fromScale(0.1, 0.05), "💪", 20)
             flexBtn.AnchorPoint = Vector2.new(0.5, 1)
             flexBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then flexStartTime = os.clock() end end)
-            bindPress(flexBtn)
-            regHide(flexBtn)
-            local throwBtn = createBtn(mobileGui, "ThrowBtn", UDim2.fromScale(0.12, 0.24), UDim2.fromScale(0.1, 0.05), "🤾", 20)
-            throwBtn.AnchorPoint = Vector2.new(0.5, 1)
-            throwBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then doThrow() end end)
-            bindPress(throwBtn)
-            regHide(throwBtn)
-            local punchBtn = createBtn(mobileGui, "PunchBtn", UDim2.fromScale(0.88, 0.35), UDim2.fromScale(0.1, 0.05), "👊", 20)
-            punchBtn.AnchorPoint = Vector2.new(0.5, 1)
-            punchBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then punchStartTime = os.clock() end end)
-            bindPress(punchBtn)
-            regHide(punchBtn)
-            local blockBtn = createBtn(mobileGui, "BlockBtn", UDim2.fromScale(0.88, 0.30), UDim2.fromScale(0.1, 0.05), "🛡️", 20)
-            blockBtn.AnchorPoint = Vector2.new(0.5, 1)
-            blockBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then blockStartTime = os.clock() end end)
-            bindPress(blockBtn)
-            regHide(blockBtn)
-
-            local function findSliderAt(pos)
-                for _, slider in ipairs(sliders) do
-                    local track = slider.track
-                    if track.Visible then
-                        local absPos = track.AbsolutePosition
-                        local absSize = track.AbsoluteSize
-                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
-                            return slider
-                        end
-                    end
-                end
-                return nil
-            end
-            local function updateHorizontalSlider(slider, touchPos)
-                local track = slider.track
-                local absPos = track.AbsolutePosition
-                local absSize = track.AbsoluteSize
-                local thumbSize = slider.thumb.AbsoluteSize
-                local minX = absPos.X + thumbSize.X / 2
-                local maxX = absPos.X + absSize.X - thumbSize.X / 2
-                local clampedX = math.clamp(touchPos.X, minX, maxX)
-                local ratio = (clampedX - minX) / (maxX - minX)
-                local value = slider.min + (slider.max - slider.min) * ratio
-                value = math.clamp(value, slider.min, slider.max)
-                local thumbX = (ratio - 0.5) * (absSize.X - thumbSize.X)
-                slider.thumb.Position = UDim2.fromOffset(thumbX, 0) + UDim2.fromScale(0.5, 0.5)
-                slider.update(value)
-            end
-            local function updateVerticalSlider(slider, touchPos)
-                local track = slider.track
-                local absPos = track.AbsolutePosition
-                local absSize = track.AbsoluteSize
-                local thumbSize = slider.thumb.AbsoluteSize
-                local minY = absPos.Y + thumbSize.Y / 2
-                local maxY = absPos.Y + absSize.Y - thumbSize.Y / 2
-                local clampedY = math.clamp(touchPos.Y, minY, maxY)
-                local ratio = 1 - (clampedY - minY) / (maxY - minY)
-                local value = slider.min + (slider.max - slider.min) * ratio
-                value = math.clamp(value, slider.min, slider.max)
-                local thumbY = (0.5 - ratio) * (absSize.Y - thumbSize.Y)
-                slider.thumb.Position = UDim2.fromOffset(0, thumbY) + UDim2.fromScale(0.5, 0.5)
-                slider.update(value)
-            end
-
-            local function isInsideAnyControl(pos)
-                for _, slider in ipairs(sliders) do
-                    local track = slider.track
-                    if track.Visible then
-                        local absPos = track.AbsolutePosition
-                        local absSize = track.AbsoluteSize
-                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
-                            return true
-                        end
-                    end
-                end
-                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn, fbb, hideToggleBtn}
-                for _, el in ipairs(topLevel) do
-                    if el.Visible then
-                        local absPos = el.AbsolutePosition
-                        local absSize = el.AbsoluteSize
-                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
-                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
-                            return true
-                        end
-                    end
-                end
-                -- 挡脸面板
-                if faceBlockPanel and faceBlockPanel.Visible then
-                    local ap = faceBlockPanel.AbsolutePosition
-                    local as_ = faceBlockPanel.AbsoluteSize
-                    if pos.X >= ap.X and pos.X <= ap.X + as_.X
-                        and pos.Y >= ap.Y and pos.Y <= ap.Y + as_.Y then
-                        return true
-                    end
-                end
-                return false
-            end
-
-            local touchLook = false
-            local lastTouch = Vector2.zero
-            local viewport = workspace.CurrentCamera.ViewportSize
-
-            UIS.TouchStarted:Connect(function(i)
-                local pos = i.Position
-                local slider = findSliderAt(pos)
-                if slider then
-                    activeSliderTouches[i] = slider
-                    if slider.track.Size.Y.Scale > slider.track.Size.X.Scale then
-                        updateVerticalSlider(slider, pos)
-                    else
-                        updateHorizontalSlider(slider, pos)
-                    end
-                    return
-                end
-                if isInsideAnyControl(pos) then return end
-                if pos.X > viewport.X * 0.5 then
-                    local vpY = viewport.Y
-                    if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
-                        touchLook = true
-                        lastTouch = pos
-                    end
-                end
-            end)
-
-            UIS.TouchMoved:Connect(function(i)
-                local slider = activeSliderTouches[i]
-                if slider then
-                    if slider.track.Size.Y.Scale > slider.track.Size.X.Scale then
-                        updateVerticalSlider(slider, i.Position)
-                    else
-                        updateHorizontalSlider(slider, i.Position)
-                    end
-                elseif touchLook then
-                    local delta = i.Position - lastTouch
-                    addLookInput(delta.X, delta.Y)
-                    lastTouch = i.Position
-                end
-            end)
-
-            UIS.TouchEnded:Connect(function(i)
-                if activeSliderTouches[i] then activeSliderTouches[i] = nil
-                elseif touchLook then touchLook = false
-                end
-            end)
-        else
-            -- 桌面端：也要有挡脸按钮和面板
-            local desktopGui = lp:WaitForChild("PlayerGui"):FindFirstChild("NoVR_MobileControls")
-            if not desktopGui then
-                desktopGui = Instance.new("ScreenGui")
-                desktopGui.Name = "NoVR_MobileControls"
-                desktopGui.ResetOnSpawn = false
-                desktopGui.IgnoreGuiInset = true
-                desktopGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-                desktopGui.Parent = lp:WaitForChild("PlayerGui")
-            end
-            local fbb = Instance.new("TextButton")
-            fbb.Name = "FaceBlockBtn"
-            fbb.Position = UDim2.fromScale(0.02, 0.06)
-            fbb.Size = UDim2.fromScale(0.18, 0.06)
-            fbb.BackgroundColor3 = Color3.fromRGB(60, 0, 100)
-            fbb.BackgroundTransparency = 0.35
-            fbb.TextColor3 = Color3.fromRGB(255, 255, 255)
-            fbb.Text = "挡脸"
-            fbb.Font = Enum.Font.SourceSansBold
-            fbb.TextSize = 14
-            fbb.AutoButtonColor = false
-            fbb.Parent = desktopGui
-            Instance.new("UICorner", fbb).CornerRadius = UDim.new(0, 6)
-            fbb.MouseButton1Click:Connect(function()
-                toggleFaceBlockPanel()
-            end)
-            faceBlockBtn = fbb
-        end
-    end)
-    print("[NoVR] control active.")
-end)
-]==]
-local function teleportToCurrentServer()
-    local ok, err = pcall(function()
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
-    end)
-    if not ok then
-        warn("[VR Hands No-VR] 重连当前服务器失败，将进入随机服务器: " .. tostring(err))
-        TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
-    end
-end
-if queue_on_teleport then
-    queue_on_teleport(hrs)
-    teleportToCurrentServer()
-elseif syn and syn.queue_on_teleport then
-    syn.queue_on_teleport(hrs)
-    teleportToCurrentServer()
-else
-    warn("[VR Hands No-VR] 当前执行器不支持传送注入，脚本仅在当前服务器生效")
-end
