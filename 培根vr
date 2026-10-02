@@ -171,6 +171,14 @@ task.spawn(function()
     local GYRO_VR_HEAD_YAW_SIGN = -1
     local GYRO_VR_HEAD_PITCH_SIGN = 1
 
+    -- ★ Fix: 视角抽动修复相关参数
+    local GYRO_HEAD_SMOOTH = 14            -- 头部跟随平滑速率（越大越跟手，越小越稳）
+    local GYRO_HEAD_DEADZONE = 0.006       -- 头部跟随死区（弧度），抑制传感器小噪声
+    local MOUSE_DELTA_MAX = 500            -- 单帧最大有效鼠标位移，超过视为鼠标锁定切换跳变
+    local gyroHeadOffsetYaw = 0
+    local gyroHeadOffsetPitch = 0
+    -- ★ Fix end
+
     local moveSmoothOn = false
     local moveVel = Vector3.zero
     local MOVE_ACCEL = 6.0
@@ -207,6 +215,9 @@ task.spawn(function()
         headGyroBase = nil
         headBaseYaw = nil
         headBasePitch = nil
+        -- ★ Fix: 重置平滑偏移
+        gyroHeadOffsetYaw = 0
+        gyroHeadOffsetPitch = 0
     end
 
     local function resetGyroRef()
@@ -464,11 +475,9 @@ task.spawn(function()
     end)
 
     -------------------------------------------------------------
-    -- ★ 关键修复：抓取半径
-    -- 原版逻辑：radius 乘以缩放系数后，手贴太近时半径太小检测不到
-    -- 修复：加一个最小半径，保证近距离必定能命中
+    -- ★ Fix: 抓取半径 —— 加最小半径下限，保证近距离必定能命中
     -------------------------------------------------------------
-    local MIN_GRAB_RADIUS = 8      -- 最小检测半径（studs）；嫌抓太远可以调小
+    local MIN_GRAB_RADIUS = 8
 
     pcall(function()
         local pmMT = getrawmetatable(vrm.PropManager)
@@ -729,14 +738,23 @@ task.spawn(function()
     end)
 
     RunService:BindToRenderStep("NoVR_Control", Enum.RenderPriority.Camera.Value + 1, function(dt)
+        -- ★ Fix: 鼠标输入过滤 + 只在需要时设置 MouseBehavior
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
+            if d.Magnitude > MOUSE_DELTA_MAX then
+                d = Vector2.zero
+            end
             if lookSmoothOn then
                 lookSmoothTarget = lookSmoothTarget + d
             else
                 applyLookDelta(d.X, d.Y)
             end
-            UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
+            if UIS.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+                UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
+            end
+            if UIS.MouseIconEnabled then
+                UIS.MouseIconEnabled = false
+            end
         end
 
         if lookSmoothOn and lookSmoothTarget.Magnitude > 0.001 then
@@ -784,11 +802,14 @@ task.spawn(function()
             gyroPosL = gyroPosL:Lerp(targetGyroL, aP)
             gyroPosR = gyroPosR:Lerp(targetGyroR, aP)
 
+            -- ★ Fix: VR 头部跟随加死区 + 平滑，消除陀螺仪噪声造成的视角抽动
             if gyroVRMode and gyroVRHeadOn then
                 if not headGyroBase or not headBaseYaw then
                     headGyroBase = gyroNow
                     headBaseYaw = yaw
                     headBasePitch = pitch
+                    gyroHeadOffsetYaw = 0
+                    gyroHeadOffsetPitch = 0
                 end
                 local hRel = headGyroBase:Inverse() * gyroNow
                 local hx, hy, hz = hRel:ToEulerAnglesYXZ()
@@ -797,9 +818,18 @@ task.spawn(function()
                     headBaseYaw = yaw
                     headBasePitch = pitch
                     hx, hy, hz = 0, 0, 0
+                    gyroHeadOffsetYaw = 0
+                    gyroHeadOffsetPitch = 0
                 end
-                yaw = headBaseYaw + hy * GYRO_VR_HEAD_K * GYRO_VR_HEAD_YAW_SIGN
-                pitch = math.clamp(headBasePitch + hx * GYRO_VR_HEAD_K * GYRO_VR_HEAD_PITCH_SIGN, -1.45, 1.45)
+                if math.abs(hy) < GYRO_HEAD_DEADZONE then hy = 0 end
+                if math.abs(hx) < GYRO_HEAD_DEADZONE then hx = 0 end
+                local targetOffYaw   = hy * GYRO_VR_HEAD_K * GYRO_VR_HEAD_YAW_SIGN
+                local targetOffPitch = hx * GYRO_VR_HEAD_K * GYRO_VR_HEAD_PITCH_SIGN
+                local aH = 1 - math.exp(-GYRO_HEAD_SMOOTH * dt)
+                gyroHeadOffsetYaw   = gyroHeadOffsetYaw   + (targetOffYaw   - gyroHeadOffsetYaw)   * aH
+                gyroHeadOffsetPitch = gyroHeadOffsetPitch + (targetOffPitch - gyroHeadOffsetPitch) * aH
+                yaw   = headBaseYaw + gyroHeadOffsetYaw
+                pitch = math.clamp(headBasePitch + gyroHeadOffsetPitch, -1.45, 1.45)
             end
         else
             local aR = math.min(dt * 6, 1)
