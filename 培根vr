@@ -172,12 +172,34 @@ task.spawn(function()
     local GYRO_VR_HEAD_PITCH_SIGN = 1
 
     -- ★ Fix: 视角抽动修复相关参数
-    local GYRO_HEAD_SMOOTH = 14            -- 头部跟随平滑速率（越大越跟手，越小越稳）
-    local GYRO_HEAD_DEADZONE = 0.006       -- 头部跟随死区（弧度），抑制传感器小噪声
-    local MOUSE_DELTA_MAX = 500            -- 单帧最大有效鼠标位移，超过视为鼠标锁定切换跳变
+    local GYRO_HEAD_SMOOTH = 14
+    local GYRO_HEAD_DEADZONE = 0.006
+    local MOUSE_DELTA_MAX = 500
     local gyroHeadOffsetYaw = 0
     local gyroHeadOffsetPitch = 0
-    -- ★ Fix end
+
+    -- ★ 新增: 动态摇晃 & 模仿真人
+    local dynamicShakeOn = false        -- 动态摇晃开关（转动时惯性晃动）
+    local humanSwayOn = false           -- 模仿真人开关（持续自然晃动）
+
+    -- 动态摇晃参数
+    local DYN_SHAKE_K = 0.022            -- 转动速率 → 摇晃幅度系数
+    local DYN_SHAKE_SPRING = 80          -- 弹簧刚度
+    local DYN_SHAKE_DAMP = 14            -- 阻尼
+    local DYN_SHAKE_YAW_MAX   = 0.075    -- 偏航限幅（弧度，约 4.3°）
+    local DYN_SHAKE_PITCH_MAX = 0.060    -- 俯仰限幅（约 3.4°）
+    local DYN_SHAKE_ROLL_MAX  = 0.045    -- 翻滚限幅（约 2.6°）
+    local dynShakeYaw, dynShakePitch, dynShakeRoll = 0, 0, 0
+    local dynShakeVelYaw, dynShakeVelPitch, dynShakeVelRoll = 0, 0, 0
+    local lastYawForShake, lastPitchForShake = 0, 0
+
+    -- 模仿真人参数
+    local HUMAN_SWAY_YAW_K   = 0.010
+    local HUMAN_SWAY_PITCH_K = 0.008
+    local HUMAN_SWAY_ROLL_K  = 0.012
+    local HUMAN_SWAY_FADE_IN = 1.5       -- 淡入速度（越大越快）
+    local humanSwayT = 0
+    local humanSwayIntensity = 0
 
     local moveSmoothOn = false
     local moveVel = Vector3.zero
@@ -215,7 +237,6 @@ task.spawn(function()
         headGyroBase = nil
         headBaseYaw = nil
         headBasePitch = nil
-        -- ★ Fix: 重置平滑偏移
         gyroHeadOffsetYaw = 0
         gyroHeadOffsetPitch = 0
     end
@@ -474,9 +495,7 @@ task.spawn(function()
         end
     end)
 
-    -------------------------------------------------------------
-    -- ★ Fix: 抓取半径 —— 加最小半径下限，保证近距离必定能命中
-    -------------------------------------------------------------
+    -- 抓取半径最小下限
     local MIN_GRAB_RADIUS = 8
 
     pcall(function()
@@ -674,6 +693,18 @@ task.spawn(function()
                 setUIHidden(uiHidden)
                 if hideToggleBtnRef then hideToggleBtnRef.Text = uiHidden and "显示UI" or "隐藏UI" end
             end
+            -- ★ 新增: 动态摇晃 / 模仿真人 快捷键
+            if io.KeyCode == Enum.KeyCode.Five then
+                dynamicShakeOn = not dynamicShakeOn
+                if not dynamicShakeOn then
+                    dynShakeVelYaw, dynShakeVelPitch, dynShakeVelRoll = 0, 0, 0
+                end
+                print("[NoVR] 动态摇晃: " .. (dynamicShakeOn and "开" or "关"))
+            end
+            if io.KeyCode == Enum.KeyCode.Six then
+                humanSwayOn = not humanSwayOn
+                print("[NoVR] 模仿真人: " .. (humanSwayOn and "开" or "关"))
+            end
 
             if Input and io.KeyCode == Enum.KeyCode.E then
                 if S.toggleGrabMode then
@@ -737,8 +768,15 @@ task.spawn(function()
         end
     end)
 
+    -- ★ 新增: 弹簧步进工具（供动态摇晃使用）
+    local function springStep(cur, vel, target, dt, k, d)
+        local accel = (target - cur) * k - vel * d
+        local newVel = vel + accel * dt
+        local newCur = cur + newVel * dt
+        return newCur, newVel
+    end
+
     RunService:BindToRenderStep("NoVR_Control", Enum.RenderPriority.Camera.Value + 1, function(dt)
-        -- ★ Fix: 鼠标输入过滤 + 只在需要时设置 MouseBehavior
         if S.look and not UIS.TouchEnabled then
             local d = UIS:GetMouseDelta()
             if d.Magnitude > MOUSE_DELTA_MAX then
@@ -802,7 +840,6 @@ task.spawn(function()
             gyroPosL = gyroPosL:Lerp(targetGyroL, aP)
             gyroPosR = gyroPosR:Lerp(targetGyroR, aP)
 
-            -- ★ Fix: VR 头部跟随加死区 + 平滑，消除陀螺仪噪声造成的视角抽动
             if gyroVRMode and gyroVRHeadOn then
                 if not headGyroBase or not headBaseYaw then
                     headGyroBase = gyroNow
@@ -839,7 +876,63 @@ task.spawn(function()
             gyroPosR = gyroPosR:Lerp(Vector3.zero, aR)
         end
 
-        local rot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
+        -------------------------------------------------------------
+        -- ★ 新增: 动态摇晃（转动时的惯性晃动）
+        -------------------------------------------------------------
+        if dynamicShakeOn then
+            local safeDt = math.max(dt, 0.001)
+            local yawRate = (yaw - lastYawForShake) / safeDt
+            local pitchRate = (pitch - lastPitchForShake) / safeDt
+            lastYawForShake = yaw
+            lastPitchForShake = pitch
+
+            -- 摇晃目标：与转动方向相反（滞后感）
+            local targetDynYaw   = math.clamp(-yawRate   * DYN_SHAKE_K, -DYN_SHAKE_YAW_MAX,   DYN_SHAKE_YAW_MAX)
+            local targetDynPitch = math.clamp(-pitchRate * DYN_SHAKE_K, -DYN_SHAKE_PITCH_MAX, DYN_SHAKE_PITCH_MAX)
+            local targetDynRoll  = math.clamp( yawRate   * DYN_SHAKE_K * 0.5, -DYN_SHAKE_ROLL_MAX, DYN_SHAKE_ROLL_MAX)
+
+            dynShakeYaw,   dynShakeVelYaw   = springStep(dynShakeYaw,   dynShakeVelYaw,   targetDynYaw,   safeDt, DYN_SHAKE_SPRING, DYN_SHAKE_DAMP)
+            dynShakePitch, dynShakeVelPitch = springStep(dynShakePitch, dynShakeVelPitch, targetDynPitch, safeDt, DYN_SHAKE_SPRING, DYN_SHAKE_DAMP)
+            dynShakeRoll,  dynShakeVelRoll  = springStep(dynShakeRoll,  dynShakeVelRoll,  targetDynRoll,  safeDt, DYN_SHAKE_SPRING, DYN_SHAKE_DAMP)
+        else
+            local a = math.min(dt * 10, 1)
+            dynShakeYaw   = dynShakeYaw   * (1 - a)
+            dynShakePitch = dynShakePitch * (1 - a)
+            dynShakeRoll  = dynShakeRoll  * (1 - a)
+            dynShakeVelYaw, dynShakeVelPitch, dynShakeVelRoll = 0, 0, 0
+            lastYawForShake = yaw
+            lastPitchForShake = pitch
+        end
+
+        -------------------------------------------------------------
+        -- ★ 新增: 模仿真人（呼吸 + 重心自然摆动）
+        -------------------------------------------------------------
+        humanSwayT = humanSwayT + dt
+        if humanSwayOn then
+            humanSwayIntensity = math.min(humanSwayIntensity + dt * HUMAN_SWAY_FADE_IN, 1)
+        else
+            humanSwayIntensity = math.max(humanSwayIntensity - dt * HUMAN_SWAY_FADE_IN, 0)
+        end
+
+        local t = humanSwayT
+        -- 呼吸上下浮动（低频）
+        local humanPitch = (math.sin(t * 0.9) * 0.6 + math.sin(t * 1.7 + 0.5) * 0.4) * HUMAN_SWAY_PITCH_K
+        -- 重心左右摆动（更低频）
+        local humanYaw   = (math.sin(t * 0.6) * 0.6 + math.sin(t * 1.1 + 1.2) * 0.4) * HUMAN_SWAY_YAW_K
+        -- 头部侧倾（心跳/肌肉微颤）
+        local humanRoll  = (math.sin(t * 0.4) * 0.6 + math.sin(t * 0.85 + 0.7) * 0.4) * HUMAN_SWAY_ROLL_K
+        humanPitch = humanPitch * humanSwayIntensity
+        humanYaw   = humanYaw   * humanSwayIntensity
+        humanRoll  = humanRoll  * humanSwayIntensity
+
+        -------------------------------------------------------------
+        -- 合成最终视角
+        -------------------------------------------------------------
+        local finalYaw   = yaw   + dynShakeYaw   + humanYaw
+        local finalPitch = pitch + dynShakePitch + humanPitch
+        local finalRoll  = dynShakeRoll + humanRoll
+
+        local rot = CFrame.fromEulerAnglesYXZ(finalPitch, finalYaw, finalRoll)
         local hs = cam.HeadScale; if hs <= 1 then hs = S.scale * 6 end
         local spd = (10 + S.scale * 4) * hs * S.moveK * S.speedMult
 
@@ -1410,6 +1503,39 @@ task.spawn(function()
             bindPress(handResetBtn)
             regHide(handResetBtn)
 
+            -- ★ 新增: 动态摇晃 按钮
+            local dynShakeBtn = createBtn(mobileGui, "DynShakeBtn", UDim2.fromScale(0.20, 0.64), UDim2.fromScale(0.18, 0.06), "动态摇晃:关", 12)
+            dynShakeBtn.AnchorPoint = Vector2.new(0, 0)
+            dynShakeBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            dynShakeBtn.BackgroundTransparency = 0.35
+            dynShakeBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    dynamicShakeOn = not dynamicShakeOn
+                    if not dynamicShakeOn then
+                        dynShakeVelYaw, dynShakeVelPitch, dynShakeVelRoll = 0, 0, 0
+                    end
+                    dynShakeBtn.Text = dynamicShakeOn and "动态摇晃:开" or "动态摇晃:关"
+                    dynShakeBtn.BackgroundColor3 = dynamicShakeOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(dynShakeBtn)
+            regHide(dynShakeBtn)
+
+            -- ★ 新增: 模仿真人 按钮
+            local humanSwayBtn = createBtn(mobileGui, "HumanSwayBtn", UDim2.fromScale(0.20, 0.71), UDim2.fromScale(0.18, 0.06), "真人晃动:关", 12)
+            humanSwayBtn.AnchorPoint = Vector2.new(0, 0)
+            humanSwayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+            humanSwayBtn.BackgroundTransparency = 0.35
+            humanSwayBtn.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.Touch then
+                    humanSwayOn = not humanSwayOn
+                    humanSwayBtn.Text = humanSwayOn and "真人晃动:开" or "真人晃动:关"
+                    humanSwayBtn.BackgroundColor3 = humanSwayOn and Color3.fromRGB(0, 140, 0) or Color3.fromRGB(80, 80, 80)
+                end
+            end)
+            bindPress(humanSwayBtn)
+            regHide(humanSwayBtn)
+
             local sliders = {}
             local activeSliderTouches = {}
 
@@ -1584,7 +1710,7 @@ task.spawn(function()
                         end
                     end
                 end
-                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
+                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, dynShakeBtn, humanSwayBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
                 for _, el in ipairs(topLevel) do
                     if el.Visible then
                         local absPos = el.AbsolutePosition
