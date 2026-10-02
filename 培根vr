@@ -241,29 +241,49 @@ task.spawn(function()
         print("[NoVR] 手部位置已重置到初始位置")
     end
 
-    -- ===== 查找目标玩家的头部 CFrame =====
-    -- 优先使用 VRPlayers 里的 VRHead（VR 玩家真实头部位置）
-    -- 找不到 VRHead 时退回到 Character.Head
-    local function getTargetHeadCFrame()
+    -- ============================================================
+    -- 挡脸锚点：绑定在目标玩家的"躯干"（HumanoidRootPart），
+    -- 而不是头部。高度偏移动态从"头顶 part"取得，兼容 VR 与普通骨骼：
+    --   VR 玩家  → workspace.VRPlayers.<uid>.HumanoidRootPart
+    --              高度参考 = workspace.VRPlayers.<uid>.VRHead.Position.Y
+    --   普通玩家 → Character.HumanoidRootPart
+    --              高度参考 = Character.Head.Position.Y
+    -- 返回：锚点 CFrame（躯干），以及锚点到头部高度的 Y 偏移
+    -- ============================================================
+    local function getTargetAnchor()
         local t = faceBlockTarget
         if not t then return nil end
-        -- 1) VR rig（VRHead）
+        -- 1) VR rig
         local vrPlayersFolder = workspace:FindFirstChild("VRPlayers")
         if vrPlayersFolder then
             local vrRig = vrPlayersFolder:FindFirstChild(tostring(t.UserId))
             if vrRig then
-                local vrHead = vrRig:FindFirstChild("VRHead")
-                if vrHead and vrHead:IsA("BasePart") then
-                    return vrHead.CFrame
+                local hrp = vrRig:FindFirstChild("HumanoidRootPart")
+                if hrp and hrp:IsA("BasePart") then
+                    local headRef = vrRig:FindFirstChild("VRHead")
+                    local headY
+                    if headRef and headRef:IsA("BasePart") then
+                        headY = headRef.Position.Y
+                    else
+                        headY = hrp.Position.Y + 1.6
+                    end
+                    return hrp.CFrame, (headY - hrp.Position.Y)
                 end
             end
         end
-        -- 2) 普通角色 Head
+        -- 2) 普通角色
         local char = t.Character
         if char then
-            local head = char:FindFirstChild("Head")
-            if head and head:IsA("BasePart") then
-                return head.CFrame
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp:IsA("BasePart") then
+                local headRef = char:FindFirstChild("Head")
+                local headY
+                if headRef and headRef:IsA("BasePart") then
+                    headY = headRef.Position.Y
+                else
+                    headY = hrp.Position.Y + 1.5
+                end
+                return hrp.CFrame, (headY - hrp.Position.Y)
             end
         end
         return nil
@@ -271,10 +291,11 @@ task.spawn(function()
 
     local function getFaceBlockCFrame(hand)
         if not faceBlockOn then return nil end
-        local headCF = getTargetHeadCFrame()
-        if not headCF then return nil end
+        local anchor, heightOff = getTargetAnchor()
+        if not anchor then return nil end
         local side = (hand == "left") and -FACE_BLOCK_SIDE or FACE_BLOCK_SIDE
-        local worldCF = headCF * CFrame.new(side, FACE_BLOCK_UP, -FACE_BLOCK_FWD)
+        -- 沿躯干局部坐标：X 左右、Y 高度偏移到脸、-Z 朝向身体正前方
+        local worldCF = anchor * CFrame.new(side, heightOff + FACE_BLOCK_UP, -FACE_BLOCK_FWD)
         return cam.CFrame:Inverse() * worldCF
     end
 
@@ -602,7 +623,6 @@ task.spawn(function()
         end
     end
 
-    -- 判断玩家是否持有 VR rig
     local function isVRPlayer(p)
         if not p then return false end
         local vrPlayersFolder = workspace:FindFirstChild("VRPlayers")
@@ -613,7 +633,7 @@ task.spawn(function()
     end
 
     -- ============================================
-    -- 挡脸专用 GUI（独立、加载时立即创建、DisplayOrder 高）
+    -- 挡脸专用 GUI
     -- ============================================
     local faceBlockGui = Instance.new("ScreenGui")
     faceBlockGui.Name = "NoVR_FaceBlockGui"
@@ -645,7 +665,7 @@ task.spawn(function()
     faceTitle.Size = UDim2.new(1, -80, 0, 32)
     faceTitle.Position = UDim2.new(0, 10, 0, 6)
     faceTitle.BackgroundTransparency = 1
-    faceTitle.Text = "选择挡脸目标 (VR)"
+    faceTitle.Text = "选择挡脸目标"
     faceTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
     faceTitle.Font = Enum.Font.SourceSansBold
     faceTitle.TextSize = 16
@@ -798,9 +818,6 @@ task.spawn(function()
         end
     end)
 
-    -- ============================================
-    -- 挡脸按钮（独立挂在 faceBlockGui 上，永远可见）
-    -- ============================================
     local fbb = Instance.new("TextButton")
     fbb.Name = "FaceBlockBtn"
     fbb.Size = UDim2.fromScale(0.16, 0.055)
@@ -1141,9 +1158,7 @@ task.spawn(function()
         end
     end)
 
-    -- ============================================
     -- 移动端控制
-    -- ============================================
     pcall(function()
         if UIS.TouchEnabled then
             local mobileGui = Instance.new("ScreenGui")
