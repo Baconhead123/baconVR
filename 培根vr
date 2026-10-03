@@ -1735,3 +1735,165 @@ task.spawn(function()
             throwBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then doThrow() end end)
             bindPress(throwBtn)
             regHide(throwBtn)
+            local punchBtn = createBtn(mobileGui, "PunchBtn", UDim2.fromScale(0.88, 0.35), UDim2.fromScale(0.1, 0.05), "👊", 20)
+            punchBtn.AnchorPoint = Vector2.new(0.5, 1)
+            punchBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then punchStartTime = os.clock() end end)
+            bindPress(punchBtn)
+            regHide(punchBtn)
+            local blockBtn = createBtn(mobileGui, "BlockBtn", UDim2.fromScale(0.88, 0.30), UDim2.fromScale(0.1, 0.05), "🛡️", 20)
+            blockBtn.AnchorPoint = Vector2.new(0.5, 1)
+            blockBtn.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then blockStartTime = os.clock() end end)
+            bindPress(blockBtn)
+            regHide(blockBtn)
+
+            local function findSliderAt(pos)
+                for _, slider in ipairs(sliders) do
+                    local track = slider.track
+                    if track.Visible then
+                        local absPos = track.AbsolutePosition
+                        local absSize = track.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return slider
+                        end
+                    end
+                end
+                return nil
+            end
+            local function updateHorizontalSlider(slider, touchPos)
+                local track = slider.track
+                local absPos = track.AbsolutePosition
+                local absSize = track.AbsoluteSize
+                local thumbSize = slider.thumb.AbsoluteSize
+                local minX = absPos.X + thumbSize.X / 2
+                local maxX = absPos.X + absSize.X - thumbSize.X / 2
+                local clampedX = math.clamp(touchPos.X, minX, maxX)
+                local ratio = (clampedX - minX) / (maxX - minX)
+                local value = slider.min + (slider.max - slider.min) * ratio
+                value = math.clamp(value, slider.min, slider.max)
+                local thumbX = (ratio - 0.5) * (absSize.X - thumbSize.X)
+                slider.thumb.Position = UDim2.fromOffset(thumbX, 0) + UDim2.fromScale(0.5, 0.5)
+                slider.update(value)
+            end
+            local function updateVerticalSlider(slider, touchPos)
+                local track = slider.track
+                local absPos = track.AbsolutePosition
+                local absSize = track.AbsoluteSize
+                local thumbSize = slider.thumb.AbsoluteSize
+                local minY = absPos.Y + thumbSize.Y / 2
+                local maxY = absPos.Y + absSize.Y - thumbSize.Y / 2
+                local clampedY = math.clamp(touchPos.Y, minY, maxY)
+                local ratio = 1 - (clampedY - minY) / (maxY - minY)
+                local value = slider.min + (slider.max - slider.min) * ratio
+                value = math.clamp(value, slider.min, slider.max)
+                local thumbY = (0.5 - ratio) * (absSize.Y - thumbSize.Y)
+                slider.thumb.Position = UDim2.fromOffset(0, thumbY) + UDim2.fromScale(0.5, 0.5)
+                slider.update(value)
+            end
+
+            local function isInsideAnyControl(pos)
+                if hideToggleBtn.Visible then
+                    local ap = hideToggleBtn.AbsolutePosition
+                    local as_ = hideToggleBtn.AbsoluteSize
+                    if pos.X >= ap.X and pos.X <= ap.X + as_.X
+                        and pos.Y >= ap.Y and pos.Y <= ap.Y + as_.Y then
+                        return true
+                    end
+                end
+                for _, slider in ipairs(sliders) do
+                    local track = slider.track
+                    if track.Visible then
+                        local absPos = track.AbsolutePosition
+                        local absSize = track.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return true
+                        end
+                    end
+                end
+                local topLevel = {dpad, vert, grab, func, shakeBtn, handBtn, timeBox, gyroBtn, gyroHandBtn, gyroResetBtn, gyroSensBtn, gyroRadiusBtn, sensDownBtn, sensUpBtn, sensLabel, gyroVRBtn, gyroVRHandBtn, gyroVRHeadBtn, gyroVRHandToggleBtn, moveSmoothBtn, lookSmoothBtn, handResetBtn, dynShakeBtn, humanSwayBtn, handDelayBtn, headOnlyBtn, waveBtn, clapBtn, startleBtn, flexBtn, throwBtn, punchBtn, blockBtn}
+                for _, el in ipairs(topLevel) do
+                    if el.Visible then
+                        local absPos = el.AbsolutePosition
+                        local absSize = el.AbsoluteSize
+                        if pos.X >= absPos.X and pos.X <= absPos.X + absSize.X
+                            and pos.Y >= absPos.Y and pos.Y <= absPos.Y + absSize.Y then
+                            return true
+                        end
+                    end
+                end
+                return false
+            end
+
+            local touchLook = false
+            local lastTouch = Vector2.zero
+            local viewport = workspace.CurrentCamera.ViewportSize
+
+            UIS.TouchStarted:Connect(function(i)
+                local pos = i.Position
+                local slider = findSliderAt(pos)
+                if slider then
+                    activeSliderTouches[i] = slider
+                    if slider.track.Size.Y.Scale > slider.track.Size.X.Scale then
+                        updateVerticalSlider(slider, pos)
+                    else
+                        updateHorizontalSlider(slider, pos)
+                    end
+                    return
+                end
+                if isInsideAnyControl(pos) then return end
+                if pos.X > viewport.X * 0.5 then
+                    local vpY = viewport.Y
+                    if pos.Y < vpY * 0.85 and pos.Y > vpY * 0.15 then
+                        touchLook = true
+                        lastTouch = pos
+                    end
+                end
+            end)
+
+            UIS.TouchMoved:Connect(function(i)
+                local slider = activeSliderTouches[i]
+                if slider then
+                    if slider.track.Size.Y.Scale > slider.track.Size.X.Scale then
+                        updateVerticalSlider(slider, i.Position)
+                    else
+                        updateHorizontalSlider(slider, i.Position)
+                    end
+                elseif touchLook then
+                    local delta = i.Position - lastTouch
+                    addLookInput(delta.X, delta.Y)
+                    lastTouch = i.Position
+                end
+            end)
+
+            UIS.TouchEnded:Connect(function(i)
+                if activeSliderTouches[i] then activeSliderTouches[i] = nil
+                elseif touchLook then touchLook = false
+                end
+            end)
+        end
+    end)
+
+    print("[NoVR] control active.")
+end)
+]==]
+
+local function teleportToCurrentServer()
+    local ok, err = pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Players.LocalPlayer)
+    end)
+    if not ok then
+        warn("[VR Hands No-VR] 重连当前服务器失败，将进入随机服务器: " .. tostring(err))
+        TeleportService:Teleport(game.PlaceId, Players.LocalPlayer)
+    end
+end
+
+if queue_on_teleport then
+    queue_on_teleport(hrs)
+    teleportToCurrentServer()
+elseif syn and syn.queue_on_teleport then
+    syn.queue_on_teleport(hrs)
+    teleportToCurrentServer()
+else
+    warn("[VR Hands No-VR] 当前执行器不支持传送注入，脚本仅在当前服务器生效")
+end
